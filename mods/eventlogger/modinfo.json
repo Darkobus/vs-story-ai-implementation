@@ -1,0 +1,12 @@
+{
+    "type": "code",
+    "name": "EventLogger",
+    "modid": "eventlogger",
+    "version": "1.0.0",
+    "description": "Logs game events (player deaths, entity kills) for AI watchdog",
+    "authors": ["custom"],
+    "side": "server",
+    "dependencies": {
+        "game": "1.21.0"
+    }
+}
