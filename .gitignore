@@ -1,0 +1,26 @@
+# Virtual environment
+venv/
+
+# Vector databases (large, regeneratable)
+chroma_db/
+wiki_db/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment / secrets
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
