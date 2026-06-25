@@ -35,6 +35,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 USE_GEMINI = bool(GEMINI_API_KEY)
+print(f"[*] Generowanie: {('Gemini ' + GEMINI_MODEL) if USE_GEMINI else ('Ollama ' + MAIN_MODEL)}"
+      f" | Embeddingi: lokalna Ollama ({EMBED_HOST})")
 
 FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
 ALLOWED_COMMANDS = ["time", "weather"]
