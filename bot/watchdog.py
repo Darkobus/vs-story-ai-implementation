@@ -13,6 +13,26 @@ import chromadb
 
 from mcrcon import MCRcon
 
+
+def load_dotenv(path=None):
+    """Wczytuje proste pary KEY=VALUE z pliku .env do środowiska (bez zależności).
+    Nie nadpisuje zmiennych już ustawionych (np. przez export/systemd)."""
+    if path is None:
+        path = Path(__file__).resolve().parent.parent / ".env"
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+load_dotenv()
+
 CONTAINER_NAME = "vs-ai-server"
 PC_IP = "192.168.0.24"          # PC z Ollamą — używany TYLKO jako fallback generowania (gdy brak Gemini)
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
