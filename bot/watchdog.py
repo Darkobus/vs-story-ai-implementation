@@ -16,11 +16,11 @@ CONTAINER_NAME = "vs-ai-server"
 PC_IP = "192.168.0.24"
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
 OLLAMA_EMBED_URL = f"http://{PC_IP}:11434/api/embeddings"
-MAIN_MODEL = "gemma3:27b"      # model generujący odpowiedzi (sprawdzony, jest w Ollamie)
-# Uwaga: kiedyś było tu "vs-god" (model fine-tunowany), ale nie ma go w Ollamie -> bot by
-# się wywalał. gemma3:27b daje najlepszą jakość; dla szybszych odpowiedzi daj "gemma3:12b".
-# Personę steruje prompt poniżej, więc zmiana modelu nie psuje tonu asystenta.
-TRANSLATE_MODEL = "gemma3:27b" # tłumaczenie PL->EN dla RAG (zostawiamy duży model)
+MAIN_MODEL = "gemma3:12b"      # model generujący; 12b MIEŚCI SIĘ w 16GB VRAM (27b nie!)
+# Uwaga: "vs-god" nie istnieje w Ollamie. gemma3:27b (17GB) NIE mieści się w 16GB VRAM
+# (RTX 5070 Ti) -> offload na CPU -> timeouty translate/embed. gemma3:12b (8GB) jest szybki
+# i stabilny. Z mocniejszym GPU możesz wrócić do "gemma3:27b". Ton steruje prompt poniżej.
+TRANSLATE_MODEL = "gemma3:12b" # tłumaczenie PL->EN dla RAG (ten sam lekki model)
 
 FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
 ALLOWED_COMMANDS = ["time", "weather"]
@@ -72,7 +72,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
                 headers={'Content-Type': 'application/json'}
             )
             try:
-                with urllib.request.urlopen(req, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=45) as response:
                     res = json.loads(response.read().decode('utf-8'))
                     embeddings.append(res["embedding"])
             except Exception as e:
@@ -105,7 +105,7 @@ def translate_query_for_rag(prompt):
             data=json.dumps(data).encode('utf-8'),
             headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=45) as response:
             result = json.loads(response.read().decode('utf-8'))
             return result.get("response", "").strip()
     except Exception as e:
@@ -233,7 +233,7 @@ def ask_ai(player, prompt):
             data=json.dumps(data).encode('utf-8'),
             headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=90) as response:
             result = json.loads(response.read().decode('utf-8'))
             ai_reply = result.get("response", "").strip()
 
@@ -288,7 +288,7 @@ def react_to_event(event_type, context):
             data=json.dumps(data).encode('utf-8'),
             headers={'Content-Type': 'application/json'}
         )
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with urllib.request.urlopen(req, timeout=90) as response:
             result = json.loads(response.read().decode('utf-8'))
             ai_reply = result.get("response", "").strip()
             if ai_reply:
