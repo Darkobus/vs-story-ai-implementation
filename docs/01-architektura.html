@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architektura · VS AI Asystent</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Dokumentacja</span>
+    <a href="index.html">Start</a>
+    <a href="01-architektura.html" class="active">Architektura</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-asystent.html">Asystent</a>
+    <a href="07-ulepszenia.html">Ulepszenia</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Część 01</div>
+    <h1>Architektura i uproszczenie</h1>
+    <p class="sub">Jak wszystkie elementy łączą się w jedną całość — i jak wygląda maksymalnie uproszczony,
+    „zrozumiały dla człowieka" szkielet tego samego pomysłu.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>Na tej stronie</strong>
+        <ol>
+            <li><a href="#calosc">Pełny obraz systemu</a></li>
+            <li><a href="#dwie-fazy">Dwie fazy: ingest i runtime</a></li>
+            <li><a href="#pliki">Mapa plików — co za co odpowiada</a></li>
+            <li><a href="#uproszczenie">Uproszczony szkielet (mentalny model)</a></li>
+            <li><a href="#alternatywy">Alternatywne architektury</a></li>
+        </ol>
+    </div>
+
+    <section id="calosc">
+        <h2><span class="num">1</span> Pełny obraz systemu</h2>
+        <p>
+            System składa się z <strong>czterech światów</strong>, które się komunikują: gra (Vintage Story w Dockerze),
+            most do gry (logi + RCON), mózg (lokalny LLM w Ollamie) i pamięć (baza wektorowa ChromaDB).
+            Poniższy diagram pokazuje, jak płynie informacja, gdy gracz zadaje pytanie.
+        </p>
+
+        <div class="svg-wrap">
+        <svg viewBox="0 0 760 420" xmlns="http://www.w3.org/2000/svg" width="100%" font-family="Segoe UI, sans-serif">
+            <defs>
+                <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                    <path d="M0,0 L7,3 L0,6 Z" fill="#2dd4bf"/>
+                </marker>
+            </defs>
+            <!-- Gra -->
+            <rect x="20" y="160" width="170" height="100" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="105" y="190" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">Serwer gry</text>
+            <text x="105" y="210" fill="#8b95a3" font-size="11" text-anchor="middle">Vintage Story</text>
+            <text x="105" y="226" fill="#8b95a3" font-size="11" text-anchor="middle">(Docker)</text>
+            <text x="105" y="246" fill="#38bdf8" font-size="10" text-anchor="middle">czat · zdarzenia · RCON</text>
+
+            <!-- Bot -->
+            <rect x="295" y="150" width="180" height="120" rx="10" fill="#15201d" stroke="#1c5247"/>
+            <text x="385" y="180" fill="#2dd4bf" font-size="15" font-weight="700" text-anchor="middle">BOT (watchdog.py)</text>
+            <text x="385" y="202" fill="#aab4c0" font-size="11" text-anchor="middle">1. czyta logi</text>
+            <text x="385" y="219" fill="#aab4c0" font-size="11" text-anchor="middle">2. pyta bazę o wiedzę</text>
+            <text x="385" y="236" fill="#aab4c0" font-size="11" text-anchor="middle">3. pyta LLM o odpowiedź</text>
+            <text x="385" y="253" fill="#aab4c0" font-size="11" text-anchor="middle">4. odsyła przez RCON</text>
+
+            <!-- LLM -->
+            <rect x="570" y="60" width="170" height="90" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="655" y="90" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">Ollama (LLM)</text>
+            <text x="655" y="110" fill="#8b95a3" font-size="11" text-anchor="middle">gemma3 / vs-asystent</text>
+            <text x="655" y="128" fill="#8b95a3" font-size="11" text-anchor="middle">nomic-embed-text</text>
+
+            <!-- Chroma -->
+            <rect x="570" y="270" width="170" height="90" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="655" y="300" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">ChromaDB</text>
+            <text x="655" y="320" fill="#8b95a3" font-size="11" text-anchor="middle">baza wektorowa</text>
+            <text x="655" y="338" fill="#8b95a3" font-size="11" text-anchor="middle">~1900 chunków wiedzy</text>
+
+            <!-- arrows -->
+            <line x1="190" y1="200" x2="293" y2="200" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="240" y="192" fill="#5d6b7a" font-size="9" text-anchor="middle">logi czatu</text>
+            <line x1="293" y1="225" x2="192" y2="225" stroke="#38bdf8" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="240" y="244" fill="#5d6b7a" font-size="9" text-anchor="middle">odpowiedź (RCON)</text>
+
+            <line x1="477" y1="180" x2="568" y2="120" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="540" y="142" fill="#5d6b7a" font-size="9" text-anchor="middle">prompt</text>
+            <line x1="477" y1="225" x2="568" y2="310" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="535" y="285" fill="#5d6b7a" font-size="9" text-anchor="middle">zapytanie</text>
+
+            <text x="380" y="40" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">Przepływ jednego pytania gracza</text>
+        </svg>
+        <div class="cap">Bot jest „dyrygentem": sam nic nie wie i nic nie generuje — łączy bazę wiedzy z modelem językowym.</div>
+        </div>
+    </section>
+
+    <section id="dwie-fazy">
+        <h2><span class="num">2</span> Dwie fazy: ingest i runtime</h2>
+        <p>To kluczowe rozróżnienie. Projekt robi dwie zupełnie różne rzeczy w dwóch różnych momentach:</p>
+
+        <div class="grid cols-2">
+            <div class="card">
+                <span class="k">Faza A · raz na jakiś czas</span>
+                <h3>Ingest (budowanie wiedzy)</h3>
+                <p>Uruchamiasz ręcznie, gdy chcesz nakarmić bota wiedzą. Czyta pliki gry i wiki, zamienia je na wektory
+                i zapisuje do ChromaDB. Po tym baza jest gotowa i nie trzeba tego powtarzać, dopóki nie chcesz dodać nowej wiedzy.</p>
+            </div>
+            <div class="card">
+                <span class="k">Faza B · cały czas w tle</span>
+                <h3>Runtime (obsługa graczy)</h3>
+                <p>Bot działa non-stop, nasłuchuje czatu i odpowiada na bieżąco. Korzysta z gotowej bazy z fazy A.
+                To jest <code>bot/watchdog.py</code>.</p>
+            </div>
+        </div>
+
+        <div class="box info">
+            <strong>Analogia:</strong> Faza A to <em>nauka do egzaminu</em> (wkuwanie notatek). Faza B to <em>sam egzamin</em>
+            (odpowiadanie na pytania z pomocą notatek). RAG = „egzamin z otwartą książką" — model nie musi wszystkiego pamiętać,
+            bo w razie potrzeby zagląda do bazy.
+        </div>
+    </section>
+
+    <section id="pliki">
+        <h2><span class="num">3</span> Mapa plików — co za co odpowiada</h2>
+        <table>
+            <thead><tr><th>Plik / katalog</th><th>Faza</th><th>Rola</th></tr></thead>
+            <tbody>
+                <tr><td><code>bot/watchdog.py</code></td><td><span class="pill green">runtime</span></td><td>Serce bota: nasłuch logów, RAG, wywołanie LLM, RCON, reakcje na zdarzenia</td></tr>
+                <tr><td><code>ingest/game_assets.py</code></td><td><span class="pill amber">ingest</span></td><td>Ładuje receptury/przedmioty/bloki z plików gry (przez <code>docker exec</code>) do bazy</td></tr>
+                <tr><td><code>ingest/wiki.py</code></td><td><span class="pill amber">ingest</span></td><td>Ładuje teksty wiki (czyści składnię MediaWiki) do bazy</td></tr>
+                <tr><td><code>tools/dbcheck.py</code></td><td>narzędzie</td><td>Podgląd zawartości bazy — testowe zapytania</td></tr>
+                <tr><td><code>tools/console.py</code></td><td>narzędzie</td><td>Interaktywna konsola RCON do gry</td></tr>
+                <tr><td><code>tools/ollama_test.py</code></td><td>narzędzie</td><td>Test połączenia z Ollamą i stanu bazy</td></tr>
+                <tr><td><code>train/generate_data.py</code></td><td>trening</td><td>Generuje dane treningowe (Q&amp;A) z bazy + przykłady ręczne</td></tr>
+                <tr><td><code>train/finetune.py</code></td><td>trening</td><td>Fine-tuning modelu (LoRA/QLoRA) → eksport do GGUF dla Ollamy</td></tr>
+                <tr><td><code>mods/eventlogger/</code></td><td>mod gry (C#)</td><td>Loguje śmierci graczy i zabójstwa, by bot mógł na nie reagować</td></tr>
+                <tr><td><code>chroma_db/</code></td><td>dane</td><td>Sama baza wektorowa (pliki na dysku)</td></tr>
+                <tr><td><code>archive/</code></td><td>—</td><td>Stare wersje skryptów (watchdog_v1/v2 itd.) — można ignorować</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="uproszczenie">
+        <h2><span class="num">4</span> Uproszczony szkielet (mentalny model)</h2>
+        <p>
+            Cały <code>watchdog.py</code> może wyglądać groźnie (wątki, kolejki, regexy). Ale jeśli odrzucisz całą „otoczkę",
+            zostaje banalnie prosta pętla. <strong>To jest cały framework w 12 liniach pseudokodu:</strong>
+        </p>
+
+        <pre><code><span class="keyword">for</span> linia <span class="keyword">in</span> logi_serwera():           <span class="comment"># 1. czytaj czat na żywo</span>
+    gracz, pytanie = wyciagnij_czat(linia)
+    <span class="keyword">if</span> <span class="keyword">not</span> pytanie: <span class="keyword">continue</span>
+
+    wiedza = baza.szukaj(pytanie, n=<span class="number">3</span>)    <span class="comment"># 2. RAG: znajdź pasujące fragmenty</span>
+
+    prompt = f<span class="string">"""Jesteś asystentem Vintage Story.
+    Wiedza: {wiedza}
+    Gracz pyta: {pytanie}"""</span>          <span class="comment"># 3. sklej prompt</span>
+
+    odpowiedz = llm.generuj(prompt)        <span class="comment"># 4. zapytaj model</span>
+    rcon.wyslij(odpowiedz)                  <span class="comment"># 5. odeślij na czat</span></code></pre>
+
+        <p>Wszystko inne w prawdziwym pliku to <strong>dodatki wokół tych 5 kroków</strong>:</p>
+        <ul>
+            <li><strong>Wątki i kolejka RCON</strong> — żeby reakcje na zdarzenia (śmierć, burza) nie blokowały głównej pętli.</li>
+            <li><strong>Tłumaczenie PL→EN</strong> — bo wiedza w bazie jest po angielsku (patrz <a href="05-llm.html">LLM</a> — da się tego pozbyć).</li>
+            <li><strong>Pamięć rozmowy</strong> — ostatnie 3 wiadomości gracza dla kontekstu.</li>
+            <li><strong>Filtr toksyczności + cooldowny</strong> — żeby nie spamować i nie reagować na wulgaryzmy.</li>
+            <li><strong>Parsowanie komend <code>[CMD: ...]</code></strong> — model może poprosić o wykonanie <code>time</code>/<code>weather</code>.</li>
+        </ul>
+
+        <div class="box tip">
+            <strong>Wniosek:</strong> jeśli kiedykolwiek zgubisz się w kodzie — wróć do tych 5 kroków.
+            Każda funkcja w <code>watchdog.py</code> obsługuje dokładnie jeden z nich albo jeden z „dodatków" powyżej.
+            W <a href="07-ulepszenia.html">Ulepszeniach</a> proponujemy rozbicie pliku na małe moduły, żeby ta struktura była widoczna od razu.
+        </div>
+    </section>
+
+    <section id="alternatywy">
+        <h2><span class="num">5</span> Alternatywne architektury</h2>
+        <p>Obecny projekt to „RAG ręcznie sklejony skryptem". To świetne do nauki, ale są inne drogi:</p>
+
+        <table>
+            <thead><tr><th>Podejście</th><th>Na czym polega</th><th>Kiedy warto</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td><strong>Obecne: ręczny skrypt</strong></td>
+                    <td>Sam piszesz pętlę, sam wołasz Chromę i Ollamę przez HTTP</td>
+                    <td>Nauka, pełna kontrola, minimum zależności <span class="pill green">tu jesteś</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Framework RAG</strong><br>(LangChain / LlamaIndex)</td>
+                    <td>Gotowe klocki: loadery, splittery, retrievery, „chainy"</td>
+                    <td>Gdy chcesz szybko dokładać funkcje (reranking, cytowania) bez pisania od zera</td>
+                </tr>
+                <tr>
+                    <td><strong>Agent z narzędziami</strong></td>
+                    <td>Model sam decyduje, kiedy „wyszukać w bazie", a kiedy „wykonać komendę" (function calling)</td>
+                    <td>Gdy chcesz bardziej autonomiczne zachowania i więcej komend</td>
+                </tr>
+                <tr>
+                    <td><strong>Fine-tuning zamiast RAG</strong></td>
+                    <td>Wiedzę „wszywasz" w wagi modelu treningiem (jest tu w <code>train/</code>)</td>
+                    <td>Do <em>stylu/tonu</em> tak. Do <em>faktów</em> słabo — wiedza się starzeje i model zmyśla. <span class="pill amber">łącz z RAG</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Mod serwera zamiast bota</strong></td>
+                    <td>Cała logika w C# wewnątrz gry, bez zewnętrznego procesu</td>
+                    <td>Gdy chcesz integracji „od środka" (np. komenda <code>/ai</code> zamiast prefiksu na czacie)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="box note">
+            <strong>Rekomendacja dla Ciebie:</strong> zostań przy ręcznym skrypcie (rozumiesz każdą linię), ale
+            <strong>pożycz dwa pomysły</strong> z frameworków: <em>próg trafności</em> przy retrievalu i <em>reranking</em>.
+            Oba opisane w <a href="02-rag.html">RAG</a> i <a href="07-ulepszenia.html">Ulepszeniach</a> — dają największy skok jakości najmniejszym kosztem.
+        </div>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="index.html">
+            <div class="dir">← Wstecz</div>
+            <div class="ttl">Start</div>
+        </a>
+        <a class="next" href="02-rag.html">
+            <div class="dir">Dalej →</div>
+            <div class="ttl">02 · RAG i baza wektorowa</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+</footer>
+
+</body>
+</html>

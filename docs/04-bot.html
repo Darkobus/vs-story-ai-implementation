@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bot (watchdog) · VS AI Asystent</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Dokumentacja</span>
+    <a href="index.html">Start</a>
+    <a href="01-architektura.html">Architektura</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html" class="active">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-asystent.html">Asystent</a>
+    <a href="07-ulepszenia.html">Ulepszenia</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Część 04 · Runtime</div>
+    <h1>Bot — <code>watchdog.py</code></h1>
+    <p class="sub">Proces, który działa cały czas: nasłuchuje czatu, łączy RAG z LLM i odsyła odpowiedzi.
+    To „faza B" — serce codziennej pracy.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>Na tej stronie</strong>
+        <ol>
+            <li><a href="#petla">Główna pętla — nasłuch logów</a></li>
+            <li><a href="#trigger">Jak gracz wywołuje bota (ważne!)</a></li>
+            <li><a href="#pipeline">Od pytania do odpowiedzi</a></li>
+            <li><a href="#rcon">Most do gry: logi + RCON</a></li>
+            <li><a href="#komendy">Komendy [CMD: ...] — bezpieczeństwo</a></li>
+            <li><a href="#watki">Wątki, kolejka i cooldowny</a></li>
+            <li><a href="#zdarzenia">Reakcje na zdarzenia świata</a></li>
+            <li><a href="#alternatywy">Alternatywy</a></li>
+        </ol>
+    </div>
+
+    <section id="petla">
+        <h2><span class="num">1</span> Główna pętla — nasłuch logów</h2>
+        <p>
+            Bot nie ma dostępu do API czatu gry. Zamiast tego <strong>czyta logi serwera</strong> jak strumień — odpala
+            <code>docker logs -f</code> i czyta każdą nową linię na bieżąco. To prosty, ale skuteczny trick „podsłuchu".
+        </p>
+        <pre><code>log_cmd = [<span class="string">"docker"</span>, <span class="string">"logs"</span>, <span class="string">"--tail"</span>, <span class="string">"0"</span>, <span class="string">"-f"</span>, CONTAINER_NAME]
+process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, text=True)
+
+<span class="keyword">for</span> line <span class="keyword">in</span> iter(process.stdout.readline, <span class="string">''</span>):   <span class="comment"># czytaj linia po linii, w nieskończoność</span>
+    flush_rcon_queue()           <span class="comment"># wyślij zaległe odpowiedzi z kolejki</span>
+    match = chat_pattern.search(line)
+    <span class="keyword">if</span> match:
+        player, msg = match.group(<span class="number">1</span>), match.group(<span class="number">2</span>)
+        ...</code></pre>
+        <p>Linie czatu rozpoznaje wyrażenie regularne, które wyłuskuje nick i treść:</p>
+        <pre><code>chat_pattern = re.compile(<span class="string">r"\[Server Chat\].*?\| (.*?): (.*)"</span>)</code></pre>
+    </section>
+
+    <section id="trigger">
+        <h2><span class="num">2</span> Jak gracz wywołuje bota (ważne!)</h2>
+        <p>
+            Bot <strong>nie odpowiada na każdą wiadomość</strong> — reaguje tylko, gdy wiadomość zaczyna się od prefiksu <code>AI </code>:
+        </p>
+        <pre><code><span class="keyword">if</span> player <span class="keyword">in</span> [<span class="string">"AI"</span>, <span class="string">"SYSTEM"</span>] <span class="keyword">or</span> <span class="keyword">not</span> msg.startswith(<span class="string">"AI "</span>):
+    <span class="keyword">continue</span>                 <span class="comment"># ignoruj wszystko bez prefiksu "AI "</span>
+clean_msg = msg[<span class="number">3</span>:].strip()    <span class="comment"># obetnij "AI " i zostaw samo pytanie</span></code></pre>
+        <div class="box warn">
+            <strong>To jest najmniej oczywista rzecz dla graczy.</strong> Żeby zagadać do bota, trzeba napisać dokładnie
+            <code>AI jak zrobić brąz?</code>. Nikt tego nie zgadnie bez instrukcji. W <a href="06-asystent.html">Asystencie</a> i
+            <a href="07-ulepszenia.html">Ulepszeniach</a> proponujemy czytelniejszy wyzwalacz (komenda <code>!ai</code> lub <code>@asystent</code>)
+            plus powitanie tłumaczące, jak korzystać.
+        </div>
+        <p>Jest też prosty <strong>filtr toksyczności</strong> — wiadomości z zakazanymi słowami są ignorowane:</p>
+        <pre><code>FORBIDDEN_WORDS = [<span class="string">"kys"</span>, <span class="string">"idiota"</span>, <span class="string">"debil"</span>]
+<span class="keyword">if</span> check_toxicity(clean_msg): <span class="keyword">continue</span></code></pre>
+    </section>
+
+    <section id="pipeline">
+        <h2><span class="num">3</span> Od pytania do odpowiedzi</h2>
+        <p>Gdy pytanie przejdzie filtry, wykonuje się funkcja <code>ask_ai()</code> — to tutaj spina się RAG z LLM:</p>
+        <pre><code><span class="keyword">def</span> <span class="func">ask_ai</span>(player, prompt):
+    knowledge = fetch_game_knowledge(prompt)        <span class="comment"># 1. RAG: tłumacz PL→EN, szukaj w bazie</span>
+    history  = <span class="string">" | "</span>.join(player_memory[player][-<span class="number">3</span>:]) <span class="comment"># 2. pamięć: ostatnie 3 wiadomości</span>
+
+    system_context = (
+        <span class="string">"Jesteś asystentem w grze Vintage Story. ..."</span>      <span class="comment"># 3. instrukcja + zasady</span>
+        f<span class="string">"Wiedza z Wiki: {knowledge} Kontekst: {history}"</span>
+    )
+    data = {<span class="string">"model"</span>: MAIN_MODEL, <span class="string">"prompt"</span>: f<span class="string">"{system_context}\nGracz: {prompt}"</span>, ...}
+    ai_reply = ollama_generate(data)                 <span class="comment"># 4. zapytaj model</span>
+    player_memory[player].append(f<span class="string">"AI: {ai_reply}"</span>)    <span class="comment"># 5. zapamiętaj odpowiedź</span>
+    <span class="keyword">return</span> ai_reply</code></pre>
+        <p>A samo wyszukiwanie wiedzy (RAG) wygląda tak — z krokiem tłumaczenia po drodze:</p>
+        <pre><code><span class="keyword">def</span> <span class="func">fetch_game_knowledge</span>(prompt):
+    translated = translate_query_for_rag(prompt)     <span class="comment"># PL → EN (bo baza jest po EN)</span>
+    results = wiki_collection.query(query_texts=[translated], n_results=<span class="number">2</span>)
+    <span class="keyword">return</span> <span class="string">"\n"</span>.join(results[<span class="string">'documents'</span>][<span class="number">0</span>])</code></pre>
+        <div class="box info">
+            Pamięć rozmowy (<code>player_memory</code>) trzyma ostatnie wiadomości <strong>w RAM-ie</strong> — znika po restarcie bota
+            i nie jest dzielona między graczy. Dla prostego bota wystarcza; trwałą pamięć omawiamy w
+            <a href="07-ulepszenia.html">Ulepszeniach</a>.
+        </div>
+    </section>
+
+    <section id="rcon">
+        <h2><span class="num">4</span> Most do gry: logi + RCON</h2>
+        <p>Bot komunikuje się z grą <strong>dwukanałowo</strong>:</p>
+        <ul>
+            <li><strong>Wejście (czytanie):</strong> <code>docker logs -f</code> — strumień zdarzeń i czatu.</li>
+            <li><strong>Wyjście (pisanie):</strong> <strong>RCON</strong> (protokół zdalnej konsoli) — wysyła <code>announce</code> i komendy.</li>
+        </ul>
+        <pre><code><span class="keyword">with</span> MCRcon(<span class="string">"127.0.0.1"</span>, <span class="string">"klawisz"</span>, port=<span class="number">42421</span>) <span class="keyword">as</span> mcr:
+    mcr.command(f<span class="string">"announce AI: {clean_msg}"</span>)   <span class="comment"># wyślij odpowiedź na czat</span>
+    <span class="keyword">for</span> cmd <span class="keyword">in</span> commands_to_run:
+        mcr.command(cmd)                       <span class="comment"># wykonaj np. "time set day"</span></code></pre>
+        <div class="box danger">
+            <strong>Bezpieczeństwo:</strong> hasło RCON (<code>"klawisz"</code>) i adresy IP są <em>zaszyte na sztywno w kodzie</em>.
+            To zła praktyka — powinny trafić do pliku <code>.env</code> / konfiguracji poza repozytorium. Patrz <a href="07-ulepszenia.html">Ulepszenia</a>.
+        </div>
+    </section>
+
+    <section id="komendy">
+        <h2><span class="num">5</span> Komendy <code>[CMD: ...]</code> — bezpieczeństwo</h2>
+        <p>
+            Model może w odpowiedzi poprosić o wykonanie komendy, wstawiając token <code>[CMD: time]</code>. Bot go wyłuskuje,
+            ale wykonuje <strong>tylko komendy z białej listy</strong> — to kluczowe zabezpieczenie:
+        </p>
+        <pre><code>ALLOWED_COMMANDS = [<span class="string">"time"</span>, <span class="string">"weather"</span>]   <span class="comment"># tylko te wolno wykonać</span>
+
+match = re.search(<span class="string">r'\[CMD:\s*(.*?)\]'</span>, message)
+<span class="keyword">if</span> match:
+    cmd = match.group(<span class="number">1</span>)
+    <span class="keyword">if</span> any(cmd.startswith(a) <span class="keyword">for</span> a <span class="keyword">in</span> ALLOWED_COMMANDS):  <span class="comment"># whitelist!</span>
+        commands_to_run.append(cmd)
+    clean_msg = re.sub(<span class="string">r'\[CMD:\s*.*?\]'</span>, <span class="string">''</span>, message)  <span class="comment"># usuń token z tekstu</span></code></pre>
+        <div class="box tip">
+            <strong>Dlaczego whitelist jest święty:</strong> bez niej model (albo gracz, który go „przekona") mógłby wykonać
+            <code>ban</code>, <code>give</code> czy <code>op</code>. Biała lista = bot może najwyżej zmienić czas/pogodę. Trzymaj się tej zasady.
+        </div>
+    </section>
+
+    <section id="watki">
+        <h2><span class="num">6</span> Wątki, kolejka i cooldowny</h2>
+        <p>To jest cała „skomplikowana otoczka" wokół prostej pętli. Trzy mechanizmy:</p>
+        <table>
+            <thead><tr><th>Mechanizm</th><th>Problem, który rozwiązuje</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Wątki (threads)</strong></td><td>Reakcja na śmierć/burzę woła LLM (wolne). Bez osobnego wątku zablokowałoby to czytanie czatu.</td></tr>
+                <tr><td><strong>Kolejka RCON</strong></td><td>RCON nie lubi wielu wątków naraz. Wątki <em>wrzucają</em> wiadomości do kolejki, a wysyła je tylko główny wątek.</td></tr>
+                <tr><td><strong>Cooldowny</strong></td><td>Zapobiega spamowi — ten sam typ zdarzenia nie wywoła reakcji częściej niż co 30 s.</td></tr>
+            </tbody>
+        </table>
+        <pre><code>rcon_queue = queue.Queue()   <span class="comment"># wątki wrzucają tu, główny wątek opróżnia</span>
+
+<span class="keyword">def</span> <span class="func">is_on_cooldown</span>(event_key):       <span class="comment"># True = za wcześnie, pomiń</span>
+    <span class="keyword">if</span> time.time() - event_cooldowns.get(event_key, <span class="number">0</span>) &lt; <span class="number">30</span>:
+        <span class="keyword">return</span> <span class="keyword">True</span>
+    event_cooldowns[event_key] = time.time()
+    <span class="keyword">return</span> <span class="keyword">False</span></code></pre>
+    </section>
+
+    <section id="zdarzenia">
+        <h2><span class="num">7</span> Reakcje na zdarzenia świata</h2>
+        <p>
+            Poza czatem bot reaguje na zdarzenia wyłapane z logów: dołączenie/wyjście gracza, burza temporalna,
+            a dzięki modowi <code>EventLogger</code> także śmierć gracza i zabicie stwora. Jest też <strong>pętla autonomiczna</strong>
+            wysyłająca losowe wiadomości co 5–15 minut.
+        </p>
+        <pre><code>join_pattern  = re.compile(<span class="string">r"\[Server Event\] (.+?) \[.+\] joins\."</span>)
+death_pattern = re.compile(<span class="string">r"\[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)"</span>)  <span class="comment"># z moda</span>
+
+<span class="keyword">if</span> join_pattern.search(line) <span class="keyword">and</span> <span class="keyword">not</span> is_on_cooldown(f<span class="string">"join_{player}"</span>):
+    threading.Thread(target=react_to_event, args=(<span class="string">"join"</span>, player)).start()</code></pre>
+        <div class="box warn">
+            <strong>Dla graczy to może być męczące.</strong> Komentarze do każdej śmierci i losowy spam co kilka minut potrafią
+            irytować. Rekomendacja: uczynić to <em>opcjonalnym i rzadszym</em> (przełącznik w configu) — patrz
+            <a href="07-ulepszenia.html">Ulepszenia</a>. Mod <code>EventLogger</code> (C#) jest opisany jako osobny element w
+            <a href="01-architektura.html#pliki">mapie plików</a>.
+        </div>
+    </section>
+
+    <section id="alternatywy">
+        <h2><span class="num">8</span> Alternatywy</h2>
+        <table>
+            <thead><tr><th>Element</th><th>Obecnie</th><th>Alternatywa</th></tr></thead>
+            <tbody>
+                <tr><td>Czytanie czatu</td><td>Parsowanie <code>docker logs</code> regexem</td><td>Mod serwera wysyłający zdarzenia po sieci (czystsze, mniej kruche niż regex)</td></tr>
+                <tr><td>Wyzwalacz</td><td>Prefiks <code>AI </code> na czacie</td><td>Komenda gry <code>/ai</code> (przez mod) lub <code>@asystent</code></td></tr>
+                <tr><td>Współbieżność</td><td>Wątki + kolejka (ręcznie)</td><td><code>asyncio</code> — jeden pętla zdarzeń, mniej pułapek z wątkami</td></tr>
+                <tr><td>Struktura kodu</td><td>Jeden plik <code>watchdog.py</code></td><td>Rozbicie na moduły: <code>chat</code>, <code>rag</code>, <code>llm</code>, <code>rcon</code>, <code>events</code></td></tr>
+                <tr><td>Konfiguracja</td><td>Stałe na górze pliku</td><td>Plik <code>.env</code> / <code>config.toml</code> (hasła poza repo)</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="03-ingest.html">
+            <div class="dir">← Wstecz</div>
+            <div class="ttl">03 · Ingest</div>
+        </a>
+        <a class="next" href="05-llm.html">
+            <div class="dir">Dalej →</div>
+            <div class="ttl">05 · LLM, Ollama, fine-tuning</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+</footer>
+
+</body>
+</html>

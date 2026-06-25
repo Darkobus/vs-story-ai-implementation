@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM, Ollama, fine-tuning · VS AI Asystent</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Dokumentacja</span>
+    <a href="index.html">Start</a>
+    <a href="01-architektura.html">Architektura</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html" class="active">LLM</a>
+    <a href="06-asystent.html">Asystent</a>
+    <a href="07-ulepszenia.html">Ulepszenia</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Część 05 · Model</div>
+    <h1>LLM, Ollama i fine-tuning</h1>
+    <p class="sub">Co robi model językowy, jak budujemy prompt, dlaczego jest krok tłumaczenia (i jak go usunąć)
+    oraz jak działa własny model trenowany w <code>train/</code>.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>Na tej stronie</strong>
+        <ol>
+            <li><a href="#ollama">Ollama — lokalny silnik LLM</a></li>
+            <li><a href="#dwa-modele">Dwa modele: embedding i generujący</a></li>
+            <li><a href="#prompt">Anatomia promptu</a></li>
+            <li><a href="#temperatura">Temperatura — pewność vs kreatywność</a></li>
+            <li><a href="#tlumaczenie">Krok tłumaczenia PL→EN (i jak go usunąć)</a></li>
+            <li><a href="#finetuning">Fine-tuning: własny model</a></li>
+            <li><a href="#rag-vs-ft">RAG vs fine-tuning — kiedy co</a></li>
+            <li><a href="#alternatywy">Alternatywy modeli</a></li>
+        </ol>
+    </div>
+
+    <section id="ollama">
+        <h2><span class="num">1</span> Ollama — lokalny silnik LLM</h2>
+        <p class="lead">
+            <strong>Ollama</strong> to program, który uruchamia modele językowe <strong>na Twoim sprzęcie</strong> i udostępnia je
+            przez proste API HTTP. Żadnej chmury, żadnych opłat za tokeny, pełna prywatność. Bot rozmawia z Ollamą zwykłymi
+            zapytaniami HTTP:
+        </p>
+        <pre><code>POST http://192.168.0.24:11434/api/generate     <span class="comment"># generowanie odpowiedzi</span>
+POST http://192.168.0.24:11434/api/embeddings   <span class="comment"># zamiana tekstu na wektor</span></code></pre>
+        <div class="box info">
+            <strong>Koszt lokalności:</strong> jakość i szybkość zależą od Twojego GPU/CPU. Duży model (<code>gemma3:27b</code>)
+            daje lepsze odpowiedzi, ale wymaga sporo VRAM i jest wolniejszy. To główny kompromis projektu.
+        </div>
+    </section>
+
+    <section id="dwa-modele">
+        <h2><span class="num">2</span> Dwa modele do dwóch różnych zadań</h2>
+        <p>Łatwo je pomylić, ale robią coś zupełnie innego:</p>
+        <table>
+            <thead><tr><th>Model</th><th>Zadanie</th><th>Wejście → wyjście</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td><code>nomic-embed-text</code></td>
+                    <td><strong>Embedding</strong> (rozumienie podobieństwa)</td>
+                    <td>tekst → wektor 768 liczb</td>
+                </tr>
+                <tr>
+                    <td><code>gemma3:27b</code> / własny</td>
+                    <td><strong>Generowanie</strong> (pisanie odpowiedzi)</td>
+                    <td>prompt → tekst odpowiedzi</td>
+                </tr>
+            </tbody>
+        </table>
+        <p>
+            Embedding jest „cichym pracownikiem" RAG-u (używany w ingeście i przy każdym pytaniu),
+            a model generujący to „głos" bota. W kodzie:
+        </p>
+        <pre><code>MAIN_MODEL      = <span class="string">"vs-god"</span>          <span class="comment"># model generujący (po fine-tuningu); fallback: gemma3:27b</span>
+TRANSLATE_MODEL = <span class="string">"gemma3:27b"</span>      <span class="comment"># do tłumaczenia PL→EN</span>
+EMBED_MODEL     = <span class="string">"nomic-embed-text"</span> <span class="comment"># do embeddingów</span></code></pre>
+        <div class="box note">
+            Nazwa <code>vs-god</code> pochodzi od przestarzałej persony „Boga". W <a href="06-asystent.html">Asystencie</a>
+            proponujemy zmianę nazwy i tonu na <code>vs-asystent</code>.
+        </div>
+    </section>
+
+    <section id="prompt">
+        <h2><span class="num">3</span> Anatomia promptu</h2>
+        <p>
+            Model dostaje <strong>jeden sklejony tekst</strong>, w którym są wszystkie potrzebne informacje. To tu „dzieje się" RAG —
+            znaleziona wiedza jest doklejana do instrukcji. Struktura:
+        </p>
+        <div class="svg-wrap">
+        <svg viewBox="0 0 640 270" xmlns="http://www.w3.org/2000/svg" width="100%" font-family="Segoe UI, sans-serif">
+            <rect x="30" y="20"  width="580" height="46" rx="8" fill="#15201d" stroke="#1c5247"/>
+            <text x="46" y="40" fill="#2dd4bf" font-size="12" font-weight="700">① ROLA + ZASADY</text>
+            <text x="46" y="57" fill="#8b95a3" font-size="11">„Jesteś asystentem Vintage Story. Odpowiadaj po polsku, max 4 zdania..."</text>
+
+            <rect x="30" y="76" width="580" height="46" rx="8" fill="#0e1d2b" stroke="#1d4e6b"/>
+            <text x="46" y="96" fill="#38bdf8" font-size="12" font-weight="700">② WIEDZA Z RAG</text>
+            <text x="46" y="113" fill="#8b95a3" font-size="11">„Wiedza z Wiki: Alloy recipe: tinbronze, ingot-tin 8-12%..."</text>
+
+            <rect x="30" y="132" width="580" height="46" rx="8" fill="#171528" stroke="#3b3170"/>
+            <text x="46" y="152" fill="#a78bfa" font-size="12" font-weight="700">③ KONTEKST ROZMOWY</text>
+            <text x="46" y="169" fill="#8b95a3" font-size="11">„Kontekst: AI: poprzednia odpowiedź | gracz pytał o miedź..."</text>
+
+            <rect x="30" y="188" width="580" height="46" rx="8" fill="#211a0c" stroke="#6b531d"/>
+            <text x="46" y="208" fill="#fbbf24" font-size="12" font-weight="700">④ PYTANIE GRACZA</text>
+            <text x="46" y="225" fill="#8b95a3" font-size="11">„Gracz Jan: jak zrobić brąz?"  →  model pisze odpowiedź</text>
+        </svg>
+        <div class="cap">Cztery warstwy promptu sklejone w jeden string i wysłane do modelu.</div>
+        </div>
+        <pre><code>system_context = (
+    <span class="string">"Jesteś asystentem w grze Vintage Story. "</span>     <span class="comment"># ① rola + zasady</span>
+    <span class="string">"Odpowiadaj po polsku, zwięźle, max 4 zdania. "</span>
+    f<span class="string">"Wiedza z Wiki: {knowledge} "</span>                  <span class="comment"># ② RAG</span>
+    f<span class="string">"Kontekst rozmowy: {history}"</span>                  <span class="comment"># ③ pamięć</span>
+)
+full_prompt = f<span class="string">"{system_context}\nGracz {player}: {prompt}\nOdpowiedź:"</span>  <span class="comment"># ④ pytanie</span></code></pre>
+    </section>
+
+    <section id="temperatura">
+        <h2><span class="num">4</span> Temperatura — pewność vs kreatywność</h2>
+        <p>
+            <code>temperature</code> steruje „losowością" modelu. Niska = przewidywalne, trzymające się faktów; wysoka = kreatywne,
+            ale częściej zmyśla. Projekt dobiera ją do zadania:
+        </p>
+        <table>
+            <thead><tr><th>Zadanie</th><th>Temperatura</th><th>Dlaczego</th></tr></thead>
+            <tbody>
+                <tr><td>Odpowiedzi na pytania (RAG)</td><td><code>0.1</code></td><td>Chcemy faktów, nie fantazji — trzymaj się wiedzy z bazy</td></tr>
+                <tr><td>Tłumaczenie PL→EN</td><td><code>0.1</code></td><td>Tłumaczenie ma być wierne, nie twórcze</td></tr>
+                <tr><td>Klimatyczne reakcje na zdarzenia</td><td><code>0.7</code></td><td>Tu chcemy różnorodności, żeby się nie powtarzać</td></tr>
+            </tbody>
+        </table>
+        <div class="box tip">
+            Dla asystenta-od-faktów <strong>niska temperatura to sojusznik</strong>. Jeśli kiedyś bot zacznie zmyślać receptury —
+            najpierw sprawdź, czy RAG zwrócił sensowną wiedzę, a potem czy temperatura nie jest za wysoka.
+        </div>
+    </section>
+
+    <section id="tlumaczenie">
+        <h2><span class="num">5</span> Krok tłumaczenia PL→EN (i jak go usunąć)</h2>
+        <p>
+            Baza wiedzy jest po <strong>angielsku</strong> (pliki gry, wiki), a gracze piszą po <strong>polsku</strong>.
+            Embedding polskiego pytania słabo pasowałby do angielskich chunków. Obecne rozwiązanie: <strong>najpierw przetłumacz
+            pytanie na angielski</strong>, dopiero potem szukaj.
+        </p>
+        <pre><code><span class="keyword">def</span> <span class="func">translate_query_for_rag</span>(prompt):
+    <span class="comment"># wyślij do modelu: "Translate this game question to English: ..."</span>
+    <span class="keyword">return</span> ollama_generate(TRANSLATE_MODEL, prompt, temperature=<span class="number">0.1</span>)</code></pre>
+        <div class="box danger">
+            <strong>Ten krok jest kruchy i kosztowny:</strong>
+            <ul style="margin:8px 0 0;">
+                <li>Dokłada <strong>całe dodatkowe wywołanie dużego LLM</strong> przed każdym pytaniem → wolniej.</li>
+                <li>Jak się zepsuje/przekręci słowo (np. „brąz" → „brown" zamiast „bronze") → RAG szuka nie tego.</li>
+                <li>To kolejny punkt awarii w łańcuchu.</li>
+            </ul>
+        </div>
+        <div class="box tip">
+            <strong>Lepsze rozwiązanie (mocno polecane):</strong> użyj <strong>wielojęzycznego modelu embeddingowego</strong>
+            (np. <code>bge-m3</code>). Taki model rozumie polski i angielski w tej samej przestrzeni wektorowej — polskie pytanie
+            trafi obok angielskiego chunku <em>bez tłumaczenia</em>. Cały krok <code>translate_query_for_rag</code> znika,
+            a bot przyspiesza i przestaje się gubić na słowach. Szczegóły w <a href="07-ulepszenia.html">Ulepszeniach</a>.
+        </div>
+    </section>
+
+    <section id="finetuning">
+        <h2><span class="num">6</span> Fine-tuning: własny model</h2>
+        <p>
+            W katalogu <code>train/</code> jest pełen potok robienia <strong>własnego modelu</strong> dotrenowanego na stylu bota.
+            Idea: wziąć gotowy model bazowy (Qwen2.5-7B) i „doszlifować" go przykładami, jak ma odpowiadać.
+        </p>
+        <div class="flow">
+            <div class="flow-step">generate_data.py<br>tworzy przykłady Q&amp;A</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">finetune.py<br>trening LoRA (QLoRA 4-bit)</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">eksport do<br>GGUF</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">Modelfile<br><code>ollama create</code></div>
+        </div>
+        <ul>
+            <li><strong><code>generate_data.py</code></strong> — generuje pary pytanie/odpowiedź z bazy (model-nauczyciel <code>gemma3:27b</code>) plus ręczne przykłady stylu i komend.</li>
+            <li><strong><code>finetune.py</code></strong> — <strong>LoRA/QLoRA</strong>: zamiast trenować cały model (miliardy wag), uczy tylko małe „nakładki". Mieści się w 16 GB VRAM.</li>
+            <li><strong><code>Modelfile</code></strong> — przepis dla Ollamy: bierze plik GGUF, ustawia temperaturę i prompt systemowy, tworzy model <code>vs-god</code>.</li>
+        </ul>
+        <pre><code><span class="comment"># LoRA = trenujemy tylko cienkie "adaptery", nie cały model</span>
+LORA_R = <span class="number">32</span>          <span class="comment"># "grubość" adaptera — większa = lepsza jakość, więcej VRAM</span>
+load_in_4bit = <span class="keyword">True</span>   <span class="comment"># kwantyzacja 4-bit (Q) w QLoRA — oszczędza pamięć</span></code></pre>
+        <div class="box info">
+            <strong>Po co fine-tuning, skoro jest RAG?</strong> Fine-tuning uczy <em>stylu i formatu</em> (zwięzłość, ton, użycie
+            <code>[CMD:]</code>), a nie faktów. To dwie różne dźwignie — patrz tabela niżej.
+        </div>
+    </section>
+
+    <section id="rag-vs-ft">
+        <h2><span class="num">7</span> RAG vs fine-tuning — kiedy co</h2>
+        <table>
+            <thead><tr><th></th><th>RAG</th><th>Fine-tuning</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Uczy</strong></td><td>Faktów (wiedza)</td><td>Stylu, tonu, formatu</td></tr>
+                <tr><td><strong>Aktualizacja</strong></td><td>Łatwa — zmień wpis w bazie</td><td>Trudna — trzeba trenować od nowa</td></tr>
+                <tr><td><strong>Halucynacje</strong></td><td>Ogranicza (podaje źródła)</td><td>Nie pomaga, czasem pogarsza</td></tr>
+                <tr><td><strong>Koszt</strong></td><td>Niski (tylko baza)</td><td>Wysoki (GPU, czas, dane)</td></tr>
+                <tr><td><strong>Najlepsze do</strong></td><td>„Jaka jest receptura X?"</td><td>„Mów krótko, po polsku, w tym stylu"</td></tr>
+            </tbody>
+        </table>
+        <div class="box tip">
+            <strong>Złota zasada:</strong> <em>fakty przez RAG, styl przez fine-tuning</em>. Najlepszy efekt daje połączenie obu —
+            ale fine-tuning jest opcjonalny. Sam RAG + dobry prompt systemowy (patrz <a href="06-asystent.html">Asystent</a>)
+            wystarcza, by bot był użyteczny.
+        </div>
+    </section>
+
+    <section id="alternatywy">
+        <h2><span class="num">8</span> Alternatywy modeli</h2>
+        <table>
+            <thead><tr><th>Rola</th><th>Obecnie</th><th>Alternatywy</th></tr></thead>
+            <tbody>
+                <tr><td>Model generujący</td><td><code>gemma3:27b</code> / <code>vs-god</code></td><td><code>qwen2.5</code>, <code>llama3.1</code>, <code>mistral</code>; mniejszy = szybszy, większy = mądrzejszy</td></tr>
+                <tr><td>Embedding</td><td><code>nomic-embed-text</code> (EN)</td><td><code>bge-m3</code>, <code>multilingual-e5</code> (wielojęzyczne — usuwają tłumaczenie)</td></tr>
+                <tr><td>Silnik</td><td>Ollama (lokalnie)</td><td>llama.cpp, vLLM (szybszy serwer), API w chmurze (jakość kosztem prywatności/$)</td></tr>
+                <tr><td>Tłumaczenie</td><td>Osobny LLM</td><td>Usunąć przez wielojęzyczny embedding; albo lekki model tłumaczący</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="04-bot.html">
+            <div class="dir">← Wstecz</div>
+            <div class="ttl">04 · Bot</div>
+        </a>
+        <a class="next" href="06-asystent.html">
+            <div class="dir">Dalej →</div>
+            <div class="ttl">06 · Asystent zamiast Boga</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+</footer>
+
+</body>
+</html>

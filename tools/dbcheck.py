@@ -46,9 +46,20 @@ for query in queries:
 
     results = wiki_collection.query(
         query_texts=[query],
-        n_results=2
+        n_results=5,
+        include=["documents", "distances"]
     )
 
-    for i, doc in enumerate(results['documents'][0]):
-        print(f"\n--- Result {i+1} ---")
+    docs = results['documents'][0]
+    dists = results['distances'][0]
+
+    def fmt_dist(d):
+        return round(d, 3) if isinstance(d, (int, float)) else d
+
+    # Odległości pomagają dobrać RAG_MAX_DISTANCE w bot/watchdog.py:
+    # ustaw próg nieco POWYŻEJ odległości trafnych wyników, a PONIŻEJ nietrafionych.
+    print(f"Odległości (mniej = bliżej): {[fmt_dist(d) for d in dists]}")
+
+    for i, (doc, dist) in enumerate(zip(docs, dists)):
+        print(f"\n--- Result {i+1} | odległość={fmt_dist(dist)} ---")
         print(doc)

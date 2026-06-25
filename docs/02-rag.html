@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG i baza wektorowa · VS AI Asystent</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Dokumentacja</span>
+    <a href="index.html">Start</a>
+    <a href="01-architektura.html">Architektura</a>
+    <a href="02-rag.html" class="active">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-asystent.html">Asystent</a>
+    <a href="07-ulepszenia.html">Ulepszenia</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Część 02 · Serce projektu</div>
+    <h1>RAG, baza wektorowa i odległości</h1>
+    <p class="sub">Wszystko, co musisz wiedzieć: embeddingi, przestrzeń wektorowa, retrieval i — szczegółowo —
+    <strong>odległość kosinusowa</strong> z przykładami liczbowymi.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>Na tej stronie</strong>
+        <ol>
+            <li><a href="#czym">Czym jest RAG i po co</a></li>
+            <li><a href="#embedding">Embedding: tekst → wektor liczb</a></li>
+            <li><a href="#przestrzen">Przestrzeń wektorowa (intuicja)</a></li>
+            <li><a href="#cos">Odległość kosinusowa — krok po kroku</a></li>
+            <li><a href="#metryki">Kosinus vs euklides vs iloczyn skalarny</a></li>
+            <li><a href="#uwaga">Ważne: ten projekt domyślnie używa L2, nie kosinusa</a></li>
+            <li><a href="#retrieval">Retrieval: jak baza znajduje wynik (HNSW)</a></li>
+            <li><a href="#chunking">Chunking — dlaczego tniemy tekst</a></li>
+            <li><a href="#alternatywy">Alternatywy (bazy, modele, strategie)</a></li>
+        </ol>
+    </div>
+
+    <section id="czym">
+        <h2><span class="num">1</span> Czym jest RAG i po co</h2>
+        <p class="lead">
+            <strong>RAG = Retrieval-Augmented Generation</strong> — „generowanie wspomagane wyszukiwaniem".
+            Zamiast liczyć, że model sam pamięta wszystko o grze, robimy tak: najpierw <em>wyszukujemy</em> pasujące fragmenty wiedzy,
+            a potem <em>doklejamy je do promptu</em>, żeby model odpowiadał na podstawie konkretnych faktów.
+        </p>
+
+        <p>Dlaczego to ważne w tym projekcie:</p>
+        <ul>
+            <li><strong>Model nie zna Twojej gry w szczegółach.</strong> Receptury, proporcje stopów, dropy bloków — tego nie ma w wiedzy modelu.</li>
+            <li><strong>Bez RAG model zmyśla (halucynuje).</strong> „Brąz to 50% cyny" — brzmi pewnie, jest błędne.</li>
+            <li><strong>Wiedza się zmienia</strong> (aktualizacje gry, mody). Łatwiej podmienić wpis w bazie niż trenować model od nowa.</li>
+        </ul>
+
+        <div class="cmp">
+            <div class="before">
+                <h4>✗ Bez RAG (czysty model)</h4>
+                <p style="margin:0; color:#d8c2c5;">„Jak zrobić cynbrąz?" → <em>„Wymieszaj cynę z miedzią w odpowiednich proporcjach."</em> — ogólnik, brak liczb, czasem błąd.</p>
+            </div>
+            <div class="after">
+                <h4>✓ Z RAG</h4>
+                <p style="margin:0; color:#bfe6d4;">→ baza zwraca <code>tinbronze: ingot-tin 8-12%, ingot-copper 88-92%</code> → <em>„Cyna 8–12% + miedź 88–92%, stop w tyglu."</em></p>
+            </div>
+        </div>
+    </section>
+
+    <section id="embedding">
+        <h2><span class="num">2</span> Embedding: tekst → wektor liczb</h2>
+        <p>
+            Komputer nie porównuje tekstu „po znaczeniu" — porównuje liczby. <strong>Embedding</strong> to zamiana fragmentu tekstu
+            na <strong>wektor</strong>, czyli listę liczb (tu: <strong>768 liczb</strong>, bo model <code>nomic-embed-text</code>
+            produkuje 768 wymiarów). Kluczowa magia: <em>teksty o podobnym znaczeniu dostają podobne wektory</em>.
+        </p>
+
+        <pre><code><span class="comment"># model embeddingowy zamienia zdanie na wektor 768 liczb</span>
+<span class="string">"how to make bronze"</span>  →  [ <span class="number">0.021</span>, <span class="number">-0.144</span>, <span class="number">0.077</span>, <span class="number">0.512</span>, ... ]   <span class="comment"># 768 liczb</span>
+<span class="string">"recipe for tin alloy"</span> →  [ <span class="number">0.019</span>, <span class="number">-0.139</span>, <span class="number">0.081</span>, <span class="number">0.498</span>, ... ]   <span class="comment"># BARDZO podobny ↑</span>
+<span class="string">"how to tame a horse"</span>  →  [ <span class="number">-0.31</span>, <span class="number">0.402</span>, <span class="number">-0.22</span>, <span class="number">0.05</span>, ... ]    <span class="comment"># zupełnie inny</span></code></pre>
+
+        <p>W projekcie robi to klasa <code>OllamaEmbeddingFunction</code> — wysyła tekst do Ollamy i odbiera wektor:</p>
+        <pre><code><span class="keyword">class</span> <span class="func">OllamaEmbeddingFunction</span>(EmbeddingFunction):
+    <span class="keyword">def</span> <span class="func">__call__</span>(self, input: list[str]) -> Embeddings:
+        embeddings = []
+        <span class="keyword">for</span> text <span class="keyword">in</span> input:
+            <span class="comment"># POST do Ollamy: {"model": "nomic-embed-text", "prompt": text}</span>
+            res = ollama_embed(text)
+            embeddings.append(res[<span class="string">"embedding"</span>])   <span class="comment"># wektor 768 liczb</span>
+        <span class="keyword">return</span> embeddings</code></pre>
+
+        <div class="box info">
+            <strong>Skąd model „wie", że bronze ≈ tin alloy?</strong> Bo był trenowany na miliardach zdań i nauczył się,
+            że te słowa pojawiają się w podobnych kontekstach. Embedding to skompresowana mapa znaczeń wyuczona z tekstu.
+        </div>
+    </section>
+
+    <section id="przestrzen">
+        <h2><span class="num">3</span> Przestrzeń wektorowa (intuicja)</h2>
+        <p>
+            Wektor 768 liczb to <strong>punkt w przestrzeni 768-wymiarowej</strong>. Nie da się tego narysować, więc wyobraźmy sobie
+            tylko 2 wymiary. Podobne znaczeniowo teksty leżą <strong>blisko siebie</strong> i tworzą „skupiska" (klastry).
+            Pytanie gracza też zamieniamy na punkt — i szukamy <strong>najbliższych sąsiadów</strong>.
+        </p>
+
+        <div class="svg-wrap">
+        <svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" width="100%" font-family="Segoe UI, sans-serif">
+            <!-- axes -->
+            <line x1="40" y1="320" x2="600" y2="320" stroke="#2d3543" stroke-width="1"/>
+            <line x1="40" y1="40" x2="40" y2="320" stroke="#2d3543" stroke-width="1"/>
+            <text x="595" y="338" fill="#5d6b7a" font-size="10">wymiar 1</text>
+            <text x="48" y="50" fill="#5d6b7a" font-size="10">wymiar 2</text>
+
+            <!-- klaster: metalurgia -->
+            <circle cx="160" cy="120" r="6" fill="#2dd4bf"/>
+            <circle cx="190" cy="100" r="6" fill="#2dd4bf"/>
+            <circle cx="150" cy="150" r="6" fill="#2dd4bf"/>
+            <circle cx="210" cy="140" r="6" fill="#2dd4bf"/>
+            <ellipse cx="178" cy="128" rx="62" ry="48" fill="none" stroke="#2dd4bf" stroke-dasharray="4" opacity="0.5"/>
+            <text x="178" y="65" fill="#2dd4bf" font-size="11" text-anchor="middle">metalurgia / stopy</text>
+
+            <!-- klaster: zwierzeta -->
+            <circle cx="470" cy="240" r="6" fill="#a78bfa"/>
+            <circle cx="500" cy="220" r="6" fill="#a78bfa"/>
+            <circle cx="450" cy="270" r="6" fill="#a78bfa"/>
+            <ellipse cx="473" cy="245" rx="50" ry="42" fill="none" stroke="#a78bfa" stroke-dasharray="4" opacity="0.5"/>
+            <text x="473" y="300" fill="#a78bfa" font-size="11" text-anchor="middle">zwierzęta / oswajanie</text>
+
+            <!-- pytanie gracza -->
+            <circle cx="230" cy="170" r="8" fill="#fbbf24" stroke="#fff" stroke-width="1.5"/>
+            <text x="245" y="175" fill="#fbbf24" font-size="11">← pytanie: „jak zrobić braz"</text>
+            <!-- linie do najblizszych -->
+            <line x1="230" y1="170" x2="210" y2="140" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="3"/>
+            <line x1="230" y1="170" x2="150" y2="150" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="3"/>
+
+            <text x="320" y="28" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">Wyszukiwanie = znajdź najbliższe punkty do pytania</text>
+        </svg>
+        <div class="cap">Pytanie (żółte) ląduje obok klastra „metalurgia" → baza zwraca te dokumenty, nie te o zwierzętach.</div>
+        </div>
+    </section>
+
+    <section id="cos">
+        <h2><span class="num">4</span> Odległość kosinusowa — krok po kroku</h2>
+        <p>
+            Skoro szukamy „najbliższych" punktów, musimy zdefiniować <strong>co znaczy blisko</strong>. Najpopularniejsza miara dla tekstu
+            to <strong>podobieństwo kosinusowe</strong>: patrzymy na <strong>kąt między dwoma wektorami</strong>, ignorując ich długość.
+        </p>
+
+        <h3>Wzór</h3>
+        <pre><code>podobieństwo_kosinusowe(A, B) = (A · B) / (|A| · |B|)
+
+gdzie:
+  A · B   = iloczyn skalarny   = a₁·b₁ + a₂·b₂ + ... + aₙ·bₙ
+  |A|     = długość wektora A  = √(a₁² + a₂² + ... + aₙ²)
+
+odległość_kosinusowa = 1 − podobieństwo_kosinusowe</code></pre>
+
+        <ul>
+            <li><strong>podobieństwo = 1</strong> → wektory wskazują <em>w tę samą stronę</em> (kąt 0°) → identyczne znaczenie → <strong>odległość 0</strong></li>
+            <li><strong>podobieństwo = 0</strong> → wektory prostopadłe (kąt 90°) → brak związku → odległość 1</li>
+            <li><strong>podobieństwo = −1</strong> → przeciwne (kąt 180°) → odległość 2</li>
+        </ul>
+
+        <h3>Przykład liczbowy (w 2D, żeby dało się policzyć ręcznie)</h3>
+        <p>Weźmy trzy wektory i policzmy, który jest bliżej pytania <code>A</code>:</p>
+
+        <div class="svg-wrap">
+        <svg viewBox="0 0 620 320" xmlns="http://www.w3.org/2000/svg" width="100%" font-family="Segoe UI, sans-serif">
+            <!-- origin at 60,280 -->
+            <line x1="60" y1="280" x2="560" y2="280" stroke="#2d3543"/>
+            <line x1="60" y1="280" x2="60" y2="30" stroke="#2d3543"/>
+            <!-- A = (4,3) scale 50 -->
+            <line x1="60" y1="280" x2="260" y2="130" stroke="#fbbf24" stroke-width="3"/>
+            <text x="266" y="126" fill="#fbbf24" font-size="13" font-weight="700">A = (4, 3) · pytanie</text>
+            <!-- B = (5,2) -->
+            <line x1="60" y1="280" x2="310" y2="180" stroke="#2dd4bf" stroke-width="3"/>
+            <text x="316" y="182" fill="#2dd4bf" font-size="13" font-weight="700">B = (5, 2) · dokument 1</text>
+            <!-- C = (-2,4) -->
+            <line x1="60" y1="280" x2="-40" y2="80" stroke="#a78bfa" stroke-width="3" transform="translate(100,0)"/>
+            <text x="70" y="70" fill="#a78bfa" font-size="13" font-weight="700">C = (-2, 4) · dokument 2</text>
+            <!-- angle arc A-B small -->
+            <path d="M 110 250 A 55 55 0 0 1 122 240" fill="none" stroke="#e6edf3" stroke-width="1"/>
+            <text x="130" y="252" fill="#e6edf3" font-size="10">θ mały</text>
+        </svg>
+        <div class="cap">A i B wskazują podobny kierunek (mały kąt) → wysokie podobieństwo. C odchyla się mocno → niskie.</div>
+        </div>
+
+        <p><strong>Liczymy A vs B:</strong></p>
+        <pre><code>A = (4, 3)   B = (5, 2)
+
+A · B = 4·5 + 3·2 = 20 + 6 = 26
+|A|   = √(4² + 3²) = √25 = 5
+|B|   = √(5² + 2²) = √29 ≈ 5.385
+
+podobieństwo = 26 / (5 · 5.385) = 26 / 26.93 ≈ <span class="builtin">0.966</span>   ← bardzo podobne!
+odległość    = 1 − 0.966 = <span class="builtin">0.034</span></code></pre>
+
+        <p><strong>Liczymy A vs C:</strong></p>
+        <pre><code>A = (4, 3)   C = (-2, 4)
+
+A · C = 4·(-2) + 3·4 = -8 + 12 = 4
+|A|   = 5
+|C|   = √((-2)² + 4²) = √20 ≈ 4.472
+
+podobieństwo = 4 / (5 · 4.472) = 4 / 22.36 ≈ <span class="builtin">0.179</span>   ← słabo powiązane
+odległość    = 1 − 0.179 = <span class="builtin">0.821</span></code></pre>
+
+        <div class="box tip">
+            <strong>Wynik:</strong> dokument B (odległość 0.034) jest dużo bliżej pytania niż dokument C (0.821).
+            Baza zwróci więc B. W projekcie dzieje się dokładnie to samo, tylko w 768 wymiarach zamiast 2 — matematyka identyczna.
+        </div>
+
+        <h3>Dlaczego kąt, a nie długość?</h3>
+        <p>
+            Bo długość wektora często zależy od <em>długości tekstu</em>, a nie od znaczenia. Zdanie „brąz" i akapit o brązie
+            mogą mieć różne długości wektorów, ale ten sam <em>kierunek</em> (temat). Kosinus patrzy tylko na kierunek →
+            jest odporny na długość tekstu. Dlatego to domyślny wybór dla wyszukiwania semantycznego.
+        </p>
+    </section>
+
+    <section id="metryki">
+        <h2><span class="num">5</span> Kosinus vs euklides vs iloczyn skalarny</h2>
+        <table>
+            <thead><tr><th>Metryka</th><th>Co mierzy</th><th>Zalety / wady</th><th>Nazwa w ChromaDB</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td><strong>Kosinusowa</strong></td>
+                    <td>Kąt (kierunek), ignoruje długość</td>
+                    <td>Standard dla tekstu; odporna na długość dokumentu</td>
+                    <td><code>cosine</code></td>
+                </tr>
+                <tr>
+                    <td><strong>Euklidesowa (L2)</strong></td>
+                    <td>Odległość „w linii prostej" między punktami</td>
+                    <td>Intuicyjna, ale czuła na długość wektora; dla nieznormalizowanych embeddingów bywa gorsza dla tekstu</td>
+                    <td><code>l2</code> <span class="pill amber">domyślna!</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Iloczyn skalarny</strong><br>(dot / inner product)</td>
+                    <td>Kierunek <em>i</em> długość naraz</td>
+                    <td>Najszybsza; jeśli wektory są znormalizowane, daje to samo co kosinus</td>
+                    <td><code>ip</code></td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="box info">
+            <strong>Ciekawostka:</strong> dla wektorów o długości 1 (znormalizowanych) kosinus, iloczyn skalarny i euklides
+            dają <em>ten sam ranking</em> sąsiadów. Różnice pojawiają się, gdy wektory nie są znormalizowane — a embeddingi z Ollamy
+            <em>nie zawsze są</em>. Dlatego wybór metryki ma znaczenie (patrz niżej).
+        </div>
+    </section>
+
+    <section id="uwaga">
+        <h2><span class="num">6</span> Ważne: ten projekt domyślnie używa L2, nie kosinusa</h2>
+        <p>
+            Pytałeś o „odległości cos" — i tu jest niespodzianka. Kolekcja w tym projekcie jest tworzona tak:
+        </p>
+        <pre><code>collection = client.get_or_create_collection(
+    name=<span class="string">"vintage_story_wiki"</span>,
+    embedding_function=OllamaEmbeddingFunction()
+    <span class="comment"># BRAK metadata={"hnsw:space": "cosine"}  ←  nikt nie ustawił metryki!</span>
+)</code></pre>
+        <p>
+            Gdy nie podasz metryki, <strong>ChromaDB domyślnie używa <code>l2</code> (kwadrat odległości euklidesowej)</strong>,
+            a nie kosinusa. Czyli mimo że „semantycznie" myślimy o kosinusie, baza realnie liczy euklides.
+        </p>
+
+        <div class="box warn">
+            <strong>To jest realny kandydat na poprawkę.</strong> Dla wyszukiwania tekstu zwykle lepszy jest kosinus.
+            Żeby go włączyć, trzeba <em>stworzyć kolekcję od nowa</em> z jawną metryką (metryki nie da się zmienić w istniejącej kolekcji):
+        </div>
+        <pre><code>collection = client.get_or_create_collection(
+    name=<span class="string">"vintage_story_wiki"</span>,
+    embedding_function=OllamaEmbeddingFunction(),
+    metadata={<span class="string">"hnsw:space"</span>: <span class="string">"cosine"</span>}   <span class="comment"># ← jawnie kosinus</span>
+)</code></pre>
+        <p>Więcej o tym i o innych poprawkach: <a href="07-ulepszenia.html">Ulepszenia</a>.</p>
+    </section>
+
+    <section id="retrieval">
+        <h2><span class="num">7</span> Retrieval: jak baza znajduje wynik (HNSW)</h2>
+        <p>
+            Gdyby baza miała policzyć odległość pytania do <em>każdego</em> z ~1900 chunków, byłoby to wolne przy dużych zbiorach.
+            Dlatego ChromaDB używa <strong>HNSW</strong> (Hierarchical Navigable Small World) — sprytnego grafu, który pozwala znaleźć
+            „prawie najbliższych" sąsiadów bez sprawdzania wszystkiego. To tzw. <strong>ANN</strong> (Approximate Nearest Neighbors).
+        </p>
+        <div class="flow">
+            <div class="flow-step">pytanie<br>(tekst)</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">embedding<br>768 liczb</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">HNSW szuka<br>najbliższych</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">top-N chunków<br>+ ich odległości</div>
+        </div>
+        <p>W kodzie to jedna linijka — cała złożoność jest schowana w bibliotece:</p>
+        <pre><code>results = wiki_collection.query(
+    query_texts=[translated],   <span class="comment"># Chroma sama zrobi embedding pytania</span>
+    n_results=<span class="number">2</span>                 <span class="comment"># zwróć 2 najbliższe chunki</span>
+)
+knowledge = <span class="string">"\n"</span>.join(results[<span class="string">'documents'</span>][<span class="number">0</span>])</code></pre>
+        <div class="box danger">
+            <strong>Pułapka, którą warto znać:</strong> <code>query</code> <em>zawsze</em> zwróci najbliższe N — nawet jeśli najbliższy
+            dokument jest kompletnie nie na temat. Bez sprawdzenia <em>odległości</em> bot wstrzyknie do promptu śmieci.
+            Rozwiązanie: <strong>próg odległości</strong> („jeśli najbliższy jest dalej niż X, powiedz że nie wiem"). Opisane w
+            <a href="07-ulepszenia.html">Ulepszeniach</a> — to jedna z najważniejszych poprawek dla graczy.
+        </div>
+    </section>
+
+    <section id="chunking">
+        <h2><span class="num">8</span> Chunking — dlaczego tniemy tekst</h2>
+        <p>
+            Nie wrzucamy do bazy całych długich stron, tylko <strong>kawałki (chunki)</strong> po ~150–200 słów, z lekkim
+            <strong>nakładem (overlap)</strong>. Powody:
+        </p>
+        <ul>
+            <li><strong>Trafność:</strong> krótki chunk = jeden konkretny temat = czystszy wektor. Cała strona miesza tematy.</li>
+            <li><strong>Limit kontekstu:</strong> do promptu wkładamy tylko 2–3 chunki, nie całą wiki — model ma ograniczone okno.</li>
+            <li><strong>Overlap:</strong> nakładające się słowa na granicy chunków chronią przed przecięciem zdania w połowie myśli.</li>
+        </ul>
+        <pre><code><span class="keyword">def</span> <span class="func">chunk_text</span>(text, max_words=<span class="number">200</span>, overlap=<span class="number">30</span>):
+    words = text.split()
+    chunks, i = [], <span class="number">0</span>
+    <span class="keyword">while</span> i &lt; len(words):
+        chunks.append(<span class="string">" "</span>.join(words[i:i + max_words]))
+        i += max_words - overlap        <span class="comment"># cofnij się o 30 słów = overlap</span>
+    <span class="keyword">return</span> chunks</code></pre>
+        <p>Szczegóły, jak dane gry trafiają do chunków: <a href="03-ingest.html">Ingest danych</a>.</p>
+    </section>
+
+    <section id="alternatywy">
+        <h2><span class="num">9</span> Alternatywy</h2>
+
+        <h3>Bazy wektorowe</h3>
+        <table>
+            <thead><tr><th>Baza</th><th>Charakterystyka</th><th>Kiedy</th></tr></thead>
+            <tbody>
+                <tr><td><strong>ChromaDB</strong></td><td>Prosta, lokalna, „pip install i działa"</td><td>Nauka, małe/średnie projekty <span class="pill green">tu</span></td></tr>
+                <tr><td><strong>FAISS</strong></td><td>Biblioteka Meta, bardzo szybka, ale „goła" (sam zarządzasz)</td><td>Gdy liczy się czysta wydajność, miliony wektorów</td></tr>
+                <tr><td><strong>Qdrant</strong></td><td>Serwer z filtrami, świetny hybrid search</td><td>Produkcja, zaawansowane filtrowanie metadanych</td></tr>
+                <tr><td><strong>pgvector</strong></td><td>Rozszerzenie PostgreSQL</td><td>Gdy już masz Postgresa i chcesz wektory obok zwykłych danych</td></tr>
+                <tr><td><strong>Weaviate / Milvus</strong></td><td>Większe systemy, skalowanie horyzontalne</td><td>Duża skala, zespół, chmura</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Modele embeddingowe</h3>
+        <table>
+            <thead><tr><th>Model</th><th>Wymiary</th><th>Uwagi</th></tr></thead>
+            <tbody>
+                <tr><td><code>nomic-embed-text</code></td><td>768</td><td>Obecny; dobry, lokalny, głównie EN <span class="pill green">tu</span></td></tr>
+                <tr><td><code>bge-m3</code></td><td>1024</td><td><strong>Wielojęzyczny</strong> — rozumie polski! Pozwala wywalić krok tłumaczenia</td></tr>
+                <tr><td><code>mxbai-embed-large</code></td><td>1024</td><td>Mocny EN, wyższa jakość niż nomic, większy</td></tr>
+                <tr><td><code>multilingual-e5</code></td><td>768/1024</td><td>Dobry wielojęzyczny, popularny</td></tr>
+                <tr><td>OpenAI <code>text-embedding-3</code></td><td>1536+</td><td>Najwyższa jakość, ale płatne API w chmurze (koniec z „lokalnie")</td></tr>
+            </tbody>
+        </table>
+        <div class="box tip">
+            <strong>Najlepszy pojedynczy ruch:</strong> zamień <code>nomic-embed-text</code> na <strong>model wielojęzyczny</strong>
+            (np. <code>bge-m3</code>). Wtedy gracz pisze po polsku, baza ma wiedzę po angielsku, a embedding i tak je „zrozumie" —
+            i znika kruchy krok tłumaczenia PL→EN (patrz <a href="05-llm.html">LLM</a>).
+        </div>
+
+        <h3>Strategie wyszukiwania</h3>
+        <ul>
+            <li><strong>Czysto wektorowe (obecne):</strong> tylko podobieństwo znaczeniowe. Słabe przy dokładnych nazwach/kodach (np. <code>ingot-tinbronze</code>).</li>
+            <li><strong>Hybrydowe (vector + BM25):</strong> łączy znaczenie ze zwykłym wyszukiwaniem słów kluczowych. Najlepsze dla recept z konkretnymi nazwami.</li>
+            <li><strong>Reranking (cross-encoder):</strong> pobierz 20 kandydatów, potem dokładny model przesortuje top-3. Duży skok trafności.</li>
+            <li><strong>MMR (Maximal Marginal Relevance):</strong> dba o różnorodność wyników, by nie dostać 3× tego samego.</li>
+        </ul>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="01-architektura.html">
+            <div class="dir">← Wstecz</div>
+            <div class="ttl">01 · Architektura</div>
+        </a>
+        <a class="next" href="03-ingest.html">
+            <div class="dir">Dalej →</div>
+            <div class="ttl">03 · Ingest danych</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+</footer>
+
+</body>
+</html>

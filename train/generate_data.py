@@ -1,13 +1,3 @@
-"""
-Generuje dane treningowe (JSONL) dla fine-tuningu Qwen2.5-7B-Instruct.
-Źródła:
-  - chroma_db (vintage_story_wiki) -> pary Q&A o grze
-  - Hardcoded przykłady roleplay, CMD tokenów, tłumaczeń
-
-Uruchom: python train/generate_data.py
-Wynik:   train/dataset.jsonl
-"""
-
 import json
 import urllib.request
 import time
@@ -72,9 +62,6 @@ def make_example(system: str, user: str, assistant: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# 1. DANE Z CHROMA_DB — generuj Q&A dla każdego chunka
-# ---------------------------------------------------------------------------
 
 def generate_from_chroma() -> list[dict]:
     examples = []
@@ -143,9 +130,6 @@ def generate_from_chroma() -> list[dict]:
     return examples
 
 
-# ---------------------------------------------------------------------------
-# 2. ROLEPLAY — hardcoded przykłady eventów
-# ---------------------------------------------------------------------------
 
 def generate_roleplay_examples() -> list[dict]:
     examples = []
@@ -240,10 +224,6 @@ def generate_roleplay_examples() -> list[dict]:
     return examples
 
 
-# ---------------------------------------------------------------------------
-# 3. CMD TOKEN — przykłady użycia [CMD: time] i [CMD: weather]
-# ---------------------------------------------------------------------------
-
 def generate_cmd_examples() -> list[dict]:
     examples = [
         ("Gracz Jan: która jest godzina?",
@@ -275,10 +255,6 @@ def generate_cmd_examples() -> list[dict]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
-
 def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +274,7 @@ def main():
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
     print(f"\n[OK] Zapisano {len(all_examples)} przykładów -> {OUTPUT_PATH}")
-    print("Następny krok: python train/finetune.py")
+
 
 
 if __name__ == "__main__":

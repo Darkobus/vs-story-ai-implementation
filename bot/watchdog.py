@@ -16,7 +16,10 @@ CONTAINER_NAME = "vs-ai-server"
 PC_IP = "192.168.0.24"
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
 OLLAMA_EMBED_URL = f"http://{PC_IP}:11434/api/embeddings"
-MAIN_MODEL = "vs-god"          # po fine-tuningu; fallback: "gemma3:27b"
+MAIN_MODEL = "vs-god"          # nazwa modelu w Ollamie; fallback: "gemma3:27b"
+# Uwaga: model "vs-god" był fine-tunowany na starej personie "Boga". Prompty poniżej
+# zmieniono na asystenta, co steruje tonem niezależnie od modelu, ale po PEŁNĄ zmianę
+# persony trzeba przetrenować model (train/generate_data.py) lub używać gemma3:27b.
 TRANSLATE_MODEL = "gemma3:27b" # tłumaczenie PL->EN dla RAG (zostawiamy duży model)
 
 FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
@@ -28,6 +31,27 @@ EVENT_COOLDOWN_SEC = 30  # minimum przerwa między reakcjami na ten sam typ zdar
 rcon_queue = queue.Queue()  # kolejka do obsługi RCON z głównego wątku
 
 CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+
+# --- Konfiguracja RAG (ochrona przed halucynacjami) ---
+RAG_N_RESULTS = 3          # ile fragmentów pobrać z bazy do oceny
+#
+# RAG_MAX_DISTANCE = próg odległości. Fragmenty DALSZE niż ta wartość są odrzucane
+# jako nietrafione, a gdy nic nie przejdzie progu -> zwracamy pustkę i model ma nie zmyślać.
+#
+# DOMYŚLNIE None = próg WYŁĄCZONY (zachowanie jak przed zmianą: zwróć najlepsze trafienia).
+# To CELOWO bezpieczny stan startowy: źle dobrany próg mógłby odrzucać WSZYSTKO i zostawić
+# bota bez wiedzy. Włącz go dopiero PO kalibracji, w dwóch krokach:
+#   1. uruchom `python tools/dbcheck.py` — wypisze realne odległości dobrych trafień
+#   2. ustaw RAG_MAX_DISTANCE nieco POWYŻEJ tych odległości (a poniżej nietrafionych)
+#
+# UWAGA na skalę: kolekcja używa domyślnej metryki Chromy "l2" (kwadrat odl. euklidesowej),
+# więc wartości NIE są w zakresie 0..1 i zależą od modelu embeddingów (tu: nomic-embed-text).
+# Po przejściu na kosinus (metadata={"hnsw:space": "cosine"} przy tworzeniu kolekcji)
+# odległości będą w okolicy 0..2 i przenośne — wtedy sensowny próg to ~0.5-0.7.
+#
+# Diagnoza po włączeniu: bot na wszystko mówi "nie wiem" -> próg za niski (zwiększ);
+#                        wciąż wstrzykuje bzdury -> próg za wysoki (zmniejsz).
+RAG_MAX_DISTANCE = None
 
 from chromadb import EmbeddingFunction, Embeddings
 
@@ -86,6 +110,12 @@ def translate_query_for_rag(prompt):
         return prompt  # fallback - użyj oryginału
 
 def fetch_game_knowledge(prompt):
+    """Wyszukuje wiedzę w bazie wektorowej z PROGIEM TRAFNOŚCI.
+
+    Zwraca tylko fragmenty bliższe niż RAG_MAX_DISTANCE. Jeśli żaden nie jest
+    wystarczająco trafny -> zwraca "" (pusty string), a prompt każe modelowi
+    przyznać, że nie zna odpowiedzi, zamiast zmyślać na bazie nietrafionych danych.
+    """
     if not wiki_collection:
         return ""
     try:
@@ -93,12 +123,40 @@ def fetch_game_knowledge(prompt):
         print(f"--> [RAG] Tłumaczenie: {translated}")
         results = wiki_collection.query(
             query_texts=[translated],
-            n_results=2
+            n_results=RAG_N_RESULTS,
+            include=["documents", "distances"]
         )
-        if results and results['documents'] and results['documents'][0]:
-            knowledge = "\n".join(results['documents'][0])
-            print(f"--> [RAG] Znaleziono wiedzę:\n{knowledge[:200]}\n")
-            return knowledge
+
+        docs = (results.get("documents") or [[]])[0]
+        dists = (results.get("distances") or [[]])[0]
+
+        if not docs:
+            print("--> [RAG] Brak wyników z bazy.")
+            return ""
+
+        # Loguj wszystkie odległości — to one pomagają dostroić RAG_MAX_DISTANCE
+        readable = [round(d, 3) if isinstance(d, (int, float)) else None for d in dists]
+        print(f"--> [RAG] Odległości: {readable} (próg={RAG_MAX_DISTANCE})")
+
+        if RAG_MAX_DISTANCE is None:
+            # Próg wyłączony — zwróć wszystkie niepuste dokumenty (zachowanie jak przed zmianą).
+            relevant = [doc for doc in docs if doc]
+        else:
+            # Zostaw tylko niepuste fragmenty bliższe niż próg.
+            relevant = [
+                doc for doc, dist in zip(docs, dists)
+                if doc and isinstance(dist, (int, float)) and dist < RAG_MAX_DISTANCE
+            ]
+
+        if not relevant:
+            best = min((d for d in dists if isinstance(d, (int, float))), default=None)
+            print(f"--> [RAG] Brak trafnych fragmentów (najlepsza odległość={best}, próg={RAG_MAX_DISTANCE}). "
+                  f"Model dostanie info, że ma nie zmyślać.")
+            return ""
+
+        knowledge = "\n".join(relevant)
+        print(f"--> [RAG] Przyjęto {len(relevant)}/{len(docs)} fragmentów:\n{knowledge[:200]}\n")
+        return knowledge
     except Exception as e:
         print(f"--> [VECTOR DB ERROR]: {e}")
     print("--> [RAG] Brak wyników.")
@@ -147,10 +205,15 @@ def ask_ai(player, prompt):
     history = " | ".join(player_memory[player][-3:])
 
     system_context = (
-        "Jesteś Bogiem - pomocnikiem w grze Vintage Story. "
-        "Zasady: 1. Odpowiadaj tylko po polsku. 2. Wytłumacz wątek najdokładniej jak się da w max 4 zdaniach"
-        "3. Zero gwiazdek, nawiasów i didaskaliów. 4. Na końcu możesz dodać komendy [CMD: ...]. "
-        f"Wiedza z Wiki: {knowledge if knowledge else 'Brak dodatkowych danych.'} "
+        "Jesteś pomocnym asystentem na serwerze gry Vintage Story. "
+        "Zasady: "
+        "1. Odpowiadaj wyłącznie po polsku, naturalnie i przyjaźnie. "
+        "2. Najpierw konkretna odpowiedź, zwięźle, maksymalnie 4 zdania. "
+        "3. Jeśli w wiedzy poniżej są dokładne liczby lub receptury, podaj je. "
+        "4. Jeśli nie masz pewnej informacji, powiedz to wprost - nie zmyślaj. "
+        "5. Bez gwiazdek, nawiasów scenicznych i patosu. "
+        "6. Na końcu możesz dodać komendę [CMD: time] lub [CMD: weather], gdy pasuje. "
+        f"Wiedza z Wiki: {knowledge if knowledge else 'Brak dopasowanej wiedzy - jeśli nie znasz pewnej odpowiedzi, przyznaj to wprost zamiast zgadywać.'} "
         f"Kontekst rozmowy: {history}"
     )
 
@@ -191,25 +254,26 @@ def is_on_cooldown(event_key):
     return False
 
 def react_to_event(event_type, context):
-    """Generuje i wysyła mroczną reakcję AI na zdarzenie w świecie."""
+    """Generuje i wysyła przyjazną reakcję asystenta na zdarzenie w świecie."""
     prompts = {
-        "join": f"Gracz {context} właśnie dołączył do serwera. Przywitaj go krótko, mrocznym, enigmatycznym tonem jako Bóg Vintage Story. Max 1-2 zdania.",
-        "leave": f"Gracz {context} właśnie opuścił serwer. Skomentuj to krótko, mrocznym tonem jako Bóg. Max 1 zdanie.",
-        "death": f"Zdarzenie w świecie: {context}. Skomentuj tę śmierć lub tragedię krótko, mrocznym, sarkastycznym tonem jako Bóg Vintage Story. Max 1-2 zdania.",
-        "storm_start": "Burza temporalna nadchodzi na serwer. Ogłoś to mroczno i dramatycznie jako Bóg, nawiązując do chaosu temporalnego. Max 2 zdania.",
-        "storm_end": "Burza temporalna właśnie ustąpiła. Skomentuj chwilowy spokój mrocznym tonem jako Bóg. Max 1 zdanie.",
-        "entity_kill": f"Zdarzenie: {context}. Skomentuj krótko zabicie jako mroczny Bóg — może pogratulować sarkazm em lub ironicznie. Max 1 zdanie.",
-        "world_event": f"Zdarzenie w świecie gry: {context}. Skomentuj to krótko jako mroczny Bóg Vintage Story. Max 1-2 zdania.",
+        "join": f"Gracz {context} właśnie dołączył do serwera. Przywitaj go krótko, ciepło i przyjaźnie. Max 1-2 zdania.",
+        "leave": f"Gracz {context} właśnie opuścił serwer. Pożegnaj go krótko i miło. Max 1 zdanie.",
+        "death": f"Zdarzenie: {context}. Skomentuj to ze współczuciem i dodaj jedną krótką, praktyczną radę na przyszłość. Max 2 zdania.",
+        "storm_start": "Nadchodzi burza temporalna. Ostrzeż graczy krótko i rzeczowo, przypomnij, żeby się schronili. Max 2 zdania.",
+        "storm_end": "Burza temporalna właśnie minęła. Poinformuj krótko, że jest już bezpiecznie. Max 1 zdanie.",
+        "entity_kill": f"Zdarzenie: {context}. Skomentuj krótko i pozytywnie, np. pochwal gracza. Max 1 zdanie.",
+        "world_event": f"Zdarzenie w świecie gry: {context}. Skomentuj je krótko i rzeczowo. Max 1-2 zdania.",
     }
 
-    prompt = prompts.get(event_type, f"Zdarzenie: {context}. Skomentuj mroczno. Max 1 zdanie.")
+    prompt = prompts.get(event_type, f"Zdarzenie: {context}. Skomentuj krótko i przyjaźnie. Max 1 zdanie.")
     print(f"[EVENT] Reaguję na: {event_type} | {context}")
 
     data = {
         "model": MAIN_MODEL,
         "prompt": (
-            "Jesteś mrocznym Bogiem serwera Vintage Story. Odpowiadaj TYLKO po polsku. "
-            "Zero gwiazdek, didaskaliów i nawiasów. Bądź enigmatyczny i mroczny.\n"
+            "Jesteś pomocnym, przyjaznym asystentem na serwerze Vintage Story. "
+            "Odpowiadaj TYLKO po polsku, krótko i rzeczowo. "
+            "Zero gwiazdek, didaskaliów, nawiasów i patosu.\n"
             f"{prompt}\nOdpowiedź:"
         ),
         "stream": False,
@@ -232,7 +296,8 @@ def react_to_event(event_type, context):
 def autonomous_loop():
     while True:
         time.sleep(random.randint(300, 900))
-        prompt = "Wyślij krótką, mroczną wiadomość do śmiertelników na serwerze."
+        prompt = ("Napisz jedną krótką, przyjazną wskazówkę dla graczy Vintage Story "
+                  "(ciekawostka o craftingu, przetrwaniu albo mechanice gry). Max 1-2 zdania.")
         ai_response = ask_ai("SYSTEM", prompt)
         if ai_response:
             send_to_game(ai_response)
