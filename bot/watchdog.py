@@ -16,10 +16,10 @@ CONTAINER_NAME = "vs-ai-server"
 PC_IP = "192.168.0.24"
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
 OLLAMA_EMBED_URL = f"http://{PC_IP}:11434/api/embeddings"
-MAIN_MODEL = "vs-god"          # nazwa modelu w Ollamie; fallback: "gemma3:27b"
-# Uwaga: model "vs-god" był fine-tunowany na starej personie "Boga". Prompty poniżej
-# zmieniono na asystenta, co steruje tonem niezależnie od modelu, ale po PEŁNĄ zmianę
-# persony trzeba przetrenować model (train/generate_data.py) lub używać gemma3:27b.
+MAIN_MODEL = "gemma3:27b"      # model generujący odpowiedzi (sprawdzony, jest w Ollamie)
+# Uwaga: kiedyś było tu "vs-god" (model fine-tunowany), ale nie ma go w Ollamie -> bot by
+# się wywalał. gemma3:27b daje najlepszą jakość; dla szybszych odpowiedzi daj "gemma3:12b".
+# Personę steruje prompt poniżej, więc zmiana modelu nie psuje tonu asystenta.
 TRANSLATE_MODEL = "gemma3:27b" # tłumaczenie PL->EN dla RAG (zostawiamy duży model)
 
 FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
@@ -38,9 +38,9 @@ RAG_N_RESULTS = 3          # ile fragmentów pobrać z bazy do oceny
 # RAG_MAX_DISTANCE = próg odległości. Fragmenty DALSZE niż ta wartość są odrzucane
 # jako nietrafione, a gdy nic nie przejdzie progu -> zwracamy pustkę i model ma nie zmyślać.
 #
-# DOMYŚLNIE None = próg WYŁĄCZONY (zachowanie jak przed zmianą: zwróć najlepsze trafienia).
-# To CELOWO bezpieczny stan startowy: źle dobrany próg mógłby odrzucać WSZYSTKO i zostawić
-# bota bez wiedzy. Włącz go dopiero PO kalibracji, w dwóch krokach:
+# Ustaw None aby WYŁĄCZYĆ próg (zachowanie jak przed zmianą: zwróć najlepsze trafienia).
+# Źle dobrany próg mógłby odrzucać WSZYSTKO i zostawić bota bez wiedzy, dlatego kalibruje się
+# go na realnych danych:
 #   1. uruchom `python tools/dbcheck.py` — wypisze realne odległości dobrych trafień
 #   2. ustaw RAG_MAX_DISTANCE nieco POWYŻEJ tych odległości (a poniżej nietrafionych)
 #
@@ -49,9 +49,12 @@ RAG_N_RESULTS = 3          # ile fragmentów pobrać z bazy do oceny
 # Po przejściu na kosinus (metadata={"hnsw:space": "cosine"} przy tworzeniu kolekcji)
 # odległości będą w okolicy 0..2 i przenośne — wtedy sensowny próg to ~0.5-0.7.
 #
-# Diagnoza po włączeniu: bot na wszystko mówi "nie wiem" -> próg za niski (zwiększ);
-#                        wciąż wstrzykuje bzdury -> próg za wysoki (zmniejsz).
-RAG_MAX_DISTANCE = None
+# WŁĄCZONE i skalibrowane na realnych danych z tego serwera (tools/dbcheck.py):
+#   dobre trafienia po tłumaczeniu PL->EN miały odległości ~158-280, śmieci 300+.
+#   300 przepuszcza trafne, a odcina nietrafione.
+# Diagnoza: bot na sensowne pytania mówi "nie wiem" -> próg za niski (zwiększ, np. 330);
+#           wciąż wstrzykuje bzdury -> próg za wysoki (zmniejsz, np. 270).
+RAG_MAX_DISTANCE = 300
 
 from chromadb import EmbeddingFunction, Embeddings
 
