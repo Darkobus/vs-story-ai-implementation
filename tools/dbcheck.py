@@ -24,7 +24,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
                 pass
         return embeddings
 
-OLLAMA_URL = "http://192.168.0.24:11434/api/embeddings"
+OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # lokalna Ollama na serwerze
 CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)

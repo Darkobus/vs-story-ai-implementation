@@ -7,20 +7,34 @@ import threading
 import time
 import random
 import queue
+import os
 from pathlib import Path
 import chromadb
 
 from mcrcon import MCRcon
 
 CONTAINER_NAME = "vs-ai-server"
-PC_IP = "192.168.0.24"
+PC_IP = "192.168.0.24"          # PC z Ollamą — używany TYLKO jako fallback generowania (gdy brak Gemini)
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
-OLLAMA_EMBED_URL = f"http://{PC_IP}:11434/api/embeddings"
+# Embeddingi (RAG) liczy lokalna Ollama NA SERWERZE (malutki nomic-embed-text na CPU),
+# żeby PC mógł być WYŁĄCZONY. Domyślnie localhost; można nadpisać zmienną OLLAMA_EMBED_HOST.
+EMBED_HOST = os.environ.get("OLLAMA_EMBED_HOST", "127.0.0.1")
+OLLAMA_EMBED_URL = f"http://{EMBED_HOST}:11434/api/embeddings"
 MAIN_MODEL = "gemma3:12b"      # model generujący; 12b MIEŚCI SIĘ w 16GB VRAM (27b nie!)
 # Uwaga: "vs-god" nie istnieje w Ollamie. gemma3:27b (17GB) NIE mieści się w 16GB VRAM
 # (RTX 5070 Ti) -> offload na CPU -> timeouty translate/embed. gemma3:12b (8GB) jest szybki
 # i stabilny. Z mocniejszym GPU możesz wrócić do "gemma3:27b". Ton steruje prompt poniżej.
 TRANSLATE_MODEL = "gemma3:12b" # tłumaczenie PL->EN dla RAG (ten sam lekki model)
+
+# --- Gemini (opcjonalnie, żeby PC nie liczył odpowiedzi) ---
+# Ustaw zmienną środowiskową GEMINI_API_KEY, a bot będzie GENEROWAŁ przez Gemini (chmura)
+# zamiast lokalnej Ollamy -> PC nie liczy i nie laguje. Klucz z https://aistudio.google.com
+# Embeddingi (RAG) ZOSTAJĄ lokalne na Ollamie (nomic-embed-text), bo baza chroma_db jest
+# zbudowana tymi wektorami. Bez klucza -> wszystko działa po staremu na Ollamie.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+USE_GEMINI = bool(GEMINI_API_KEY)
 
 FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
 ALLOWED_COMMANDS = ["time", "weather"]
@@ -91,23 +105,58 @@ except Exception as e:
     print(f"[*] OSTRZEZENIE: Brak bazy wektorowej lub blad: {e}")
     wiki_collection = None
 
-def translate_query_for_rag(prompt):
-    """Wysyła zapytanie do AI żeby przetłumaczyć na angielski dla RAG"""
+# --- Generowanie tekstu: Gemini (chmura) albo Ollama (lokalnie) ---
+def _gemini_generate(prompt, temperature, timeout):
     data = {
-        "model": TRANSLATE_MODEL,
-        "prompt": f"Translate this game-related question to English, return ONLY the translation, no extra words: {prompt}",
-        "stream": False,
-        "options": {"temperature": 0.1}
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": 400,
+            "thinkingConfig": {"thinkingBudget": 0},  # wyłącz "myślenie" -> szybciej i taniej
+        },
     }
+    req = urllib.request.Request(
+        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def _ollama_generate(prompt, temperature, timeout):
+    data = {
+        "model": MAIN_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature},
+    }
+    req = urllib.request.Request(
+        OLLAMA_API_URL,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    return result.get("response", "").strip()
+
+
+def generate_text(prompt, temperature=0.1, timeout=90):
+    """Generuje odpowiedź modelem. Gemini jeśli ustawiono GEMINI_API_KEY, inaczej Ollama."""
+    if USE_GEMINI:
+        return _gemini_generate(prompt, temperature, timeout)
+    return _ollama_generate(prompt, temperature, timeout)
+
+
+def translate_query_for_rag(prompt):
+    """Tłumaczy pytanie gracza na angielski dla RAG (Gemini lub Ollama)."""
     try:
-        req = urllib.request.Request(
-            OLLAMA_API_URL,
-            data=json.dumps(data).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
+        translate_prompt = (
+            "Translate this game-related question to English, "
+            f"return ONLY the translation, no extra words: {prompt}"
         )
-        with urllib.request.urlopen(req, timeout=45) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            return result.get("response", "").strip()
+        return generate_text(translate_prompt, temperature=0.1, timeout=45)
     except Exception as e:
         print(f"--> [TRANSLATE ERROR]: {e}")
         return prompt  # fallback - użyj oryginału
@@ -220,30 +269,18 @@ def ask_ai(player, prompt):
         f"Kontekst rozmowy: {history}"
     )
 
-    data = {
-        "model": MAIN_MODEL,
-        "prompt": f"{system_context}\nGracz {player}: {prompt}\nOdpowiedź:",
-        "stream": False,
-        "options": {"temperature": 0.1}
-    }
+    full_prompt = f"{system_context}\nGracz {player}: {prompt}\nOdpowiedź:"
 
     try:
-        req = urllib.request.Request(
-            OLLAMA_API_URL,
-            data=json.dumps(data).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req, timeout=90) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            ai_reply = result.get("response", "").strip()
+        ai_reply = generate_text(full_prompt, temperature=0.1, timeout=90)
 
-            clean_reply = re.sub(r'\[CMD:\s*.*?\]', '', ai_reply).strip()
-            if clean_reply:
-                player_memory[player].append(f"AI: {clean_reply}")
-                if len(player_memory[player]) > 5:
-                    player_memory[player].pop(0)
+        clean_reply = re.sub(r'\[CMD:\s*.*?\]', '', ai_reply).strip()
+        if clean_reply:
+            player_memory[player].append(f"AI: {clean_reply}")
+            if len(player_memory[player]) > 5:
+                player_memory[player].pop(0)
 
-            return ai_reply
+        return ai_reply
     except Exception as e:
         print(f"--> [AI ERROR]: {e}")
         return ""
@@ -271,28 +308,16 @@ def react_to_event(event_type, context):
     prompt = prompts.get(event_type, f"Zdarzenie: {context}. Skomentuj krótko i przyjaźnie. Max 1 zdanie.")
     print(f"[EVENT] Reaguję na: {event_type} | {context}")
 
-    data = {
-        "model": MAIN_MODEL,
-        "prompt": (
-            "Jesteś pomocnym, przyjaznym asystentem na serwerze Vintage Story. "
-            "Odpowiadaj TYLKO po polsku, krótko i rzeczowo. "
-            "Zero gwiazdek, didaskaliów, nawiasów i patosu.\n"
-            f"{prompt}\nOdpowiedź:"
-        ),
-        "stream": False,
-        "options": {"temperature": 0.7}
-    }
+    full_prompt = (
+        "Jesteś pomocnym, przyjaznym asystentem na serwerze Vintage Story. "
+        "Odpowiadaj TYLKO po polsku, krótko i rzeczowo. "
+        "Zero gwiazdek, didaskaliów, nawiasów i patosu.\n"
+        f"{prompt}\nOdpowiedź:"
+    )
     try:
-        req = urllib.request.Request(
-            OLLAMA_API_URL,
-            data=json.dumps(data).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req, timeout=90) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            ai_reply = result.get("response", "").strip()
-            if ai_reply:
-                send_to_game(ai_reply)
+        ai_reply = generate_text(full_prompt, temperature=0.7, timeout=90)
+        if ai_reply:
+            send_to_game(ai_reply)
     except Exception as e:
         print(f"--> [EVENT AI ERROR]: {e}")
 

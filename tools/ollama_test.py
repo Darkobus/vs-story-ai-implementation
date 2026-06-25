@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import chromadb
 
-OLLAMA_URL = "http://192.168.0.24:11434/api/embeddings"
+OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # lokalna Ollama na serwerze
 
 def test_ollama_connection():
     req = urllib.request.Request(

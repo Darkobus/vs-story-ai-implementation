@@ -51,7 +51,7 @@ def create_chunks(cleaned_text: str, max_words: int = 150, overlap_words: int = 
         current_index += (max_words - overlap_words)
     return chunks
 
-OLLAMA_URL = "http://192.168.0.24:11434/api/embeddings"
+OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # embeddingi liczy lokalna Ollama na serwerze
 CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
