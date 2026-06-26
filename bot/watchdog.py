@@ -69,7 +69,7 @@ rcon_queue = queue.Queue()  # kolejka do obsługi RCON z głównego wątku
 CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 
 # --- Konfiguracja RAG (ochrona przed halucynacjami) ---
-RAG_N_RESULTS = 3          # ile fragmentów pobrać z bazy do oceny
+RAG_N_RESULTS = 5          # ile fragmentów pobrać z bazy do oceny (więcej = lepsze ugruntowanie)
 #
 # RAG_MAX_DISTANCE = próg odległości. Fragmenty DALSZE niż ta wartość są odrzucane
 # jako nietrafione, a gdy nic nie przejdzie progu -> zwracamy pustkę i model ma nie zmyślać.
@@ -283,11 +283,15 @@ def ask_ai(player, prompt):
         "Zasady: "
         "1. Odpowiadaj wyłącznie po polsku, naturalnie i przyjaźnie. "
         "2. Najpierw konkretna odpowiedź, zwięźle, maksymalnie 4 zdania. "
-        "3. Jeśli w wiedzy poniżej są dokładne liczby lub receptury, podaj je. "
-        "4. Jeśli nie masz pewnej informacji, powiedz to wprost - nie zmyślaj. "
-        "5. Bez gwiazdek, nawiasów scenicznych i patosu. "
-        "6. Na końcu możesz dodać komendę [CMD: time] lub [CMD: weather], gdy pasuje. "
-        f"Wiedza z Wiki: {knowledge if knowledge else 'Brak dopasowanej wiedzy - jeśli nie znasz pewnej odpowiedzi, przyznaj to wprost zamiast zgadywać.'} "
+        "3. Opieraj się PRZEDE WSZYSTKIM na 'Wiedzy z Wiki' poniżej - to twarde dane z tej gry; "
+        "jeśli są tam liczby lub receptury, podaj DOKŁADNIE te wartości, nie własne. "
+        "4. Vintage Story to NIE Minecraft - ma własne, inne mechaniki. Nie przenoś receptur, "
+        "proporcji, nazw ani zasad z innych gier. "
+        "5. Jeśli w wiedzy poniżej nie ma odpowiedzi, napisz wprost, że nie masz pewnej informacji - "
+        "NIE zgaduj liczb, receptur ani nazw z pamięci. "
+        "6. Bez gwiazdek, nawiasów scenicznych i patosu. "
+        "7. Na końcu możesz dodać komendę [CMD: time] lub [CMD: weather], gdy pasuje. "
+        f"Wiedza z Wiki: {knowledge if knowledge else 'Brak dopasowanej wiedzy w bazie - powiedz graczowi wprost, że nie masz pewnej informacji na ten temat, zamiast zgadywać.'} "
         f"Kontekst rozmowy: {history}"
     )
 
