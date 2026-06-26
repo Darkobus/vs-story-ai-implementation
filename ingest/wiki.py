@@ -1,10 +1,46 @@
-import os
+"""
+Pobiera kluczowe strony wiki Vintage Story i ładuje je do ChromaDB (RAG).
+Uzupełnia bazę o WIEDZĘ OPISOWĄ (procesy: stal, kwarc, rudy...), której nie ma
+w surowych danych assetów gry.
+
+Uruchom na serwerze (z lokalną Ollamą dla embeddingów):
+    python ingest/wiki.py
+
+Dodaj/zmień strony w liście PAGES poniżej i uruchom ponownie — dzięki upsert
+nie powstaną duplikaty (te same ID nadpisują się).
+"""
+
 import re
 import json
+import time
 import urllib.request
+import urllib.parse
 from pathlib import Path
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+
+OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # lokalna Ollama na serwerze
+CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+COLLECTION_NAME = "vintage_story_wiki"
+WIKI_API = "https://wiki.vintagestory.at/api.php"
+
+# Strony do pobrania. Skup się na PROCESACH i mechanikach, nie pojedynczych przedmiotach
+# (przedmioty/receptury są już w bazie z ingest/game_assets.py). Nieistniejące strony
+# są pomijane, więc możesz spokojnie dopisywać kandydatów.
+PAGES = [
+    # Metalurgia / kucie
+    "Metallurgy", "Casting", "Crucible", "Anvil", "Smithing", "Bloomery",
+    "Steel", "Iron", "Copper", "Tin", "Bronze", "Bismuth", "Silver", "Gold", "Lead",
+    "Ingot", "Bellows", "Forge", "Helve_hammer",
+    # Wydobycie / kamień
+    "Ore", "Prospecting", "Prospecting_pick", "Mining", "Quartz", "Rock", "Knapping",
+    # Narzędzia
+    "Axe", "Pickaxe", "Shovel", "Hammer", "Saw", "Chisel", "Knife", "Tools",
+    # Przetrwanie / świat
+    "Temporal_storm", "Drifter", "Charcoal", "Coke",
+    "Cooking", "Food", "Clay_forming", "Pottery", "Firepit",
+]
+
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
     def __init__(self, url: str):
@@ -15,73 +51,123 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         for text in input:
             req = urllib.request.Request(
                 self.url,
-                data=json.dumps({"model": "nomic-embed-text", "prompt": text}).encode('utf-8'),
-                headers={'Content-Type': 'application/json'}
+                data=json.dumps({
+                    "model": "nomic-embed-text", "prompt": text, "keep_alive": "30m"
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
             )
             try:
-                with urllib.request.urlopen(req) as response:
-                    res = json.loads(response.read().decode())
-                    embeddings.append(res["embedding"])
-            except Exception:
-                pass
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    embeddings.append(json.loads(r.read().decode())["embedding"])
+            except Exception as e:
+                print(f"  [embed error] {e}")
+                embeddings.append([0.0] * 768)
         return embeddings
 
-def clean_mediawiki_text(raw_text: str) -> str:
-    text = re.sub(r'__\w+__', '', raw_text)
+
+def clean_mediawiki_text(raw: str) -> str:
+    """Zamienia wikitext na czysty tekst, ZACHOWUJĄC słowa z szablonów/linków
+    (stary problem: usuwanie {{...}} zostawiało dziury typu '...via , and...')."""
+    text = raw
+    # Szablony: {{ll|Charcoal}} albo {{x|a|Display}} -> zachowaj OSTATNI segment (tekst),
+    # zamiast usuwać całość. Pętla, bo szablony bywają zagnieżdżone.
+    for _ in range(5):
+        new = re.sub(r'\{\{(?:[^{}|]*\|)*([^{}|]+)\}\}', r'\1', text)
+        if new == text:
+            break
+        text = new
+    text = re.sub(r'\{\{[^{}]*\}\}', '', text)   # puste/parametrowe szablony do wyrzucenia
+
+    # Linki: [[Strona|tekst]] -> tekst, [[Strona]] -> Strona
     text = re.sub(r'\[\[(?:[^|\]]*\|)?([^\]]+)\]\]', r'\1', text)
+    # Linki zewnętrzne: [http... tekst] -> tekst
+    text = re.sub(r'\[https?://\S+\s+([^\]]+)\]', r'\1', text)
+    text = re.sub(r'\[https?://\S+\]', '', text)
+
+    # Nagłówki == X == -> X ; pogrubienia/kursywa
     text = re.sub(r'={2,}\s*(.*?)\s*={2,}', r'\1', text)
     text = re.sub(r"'''''(.*?)'''''", r'\1', text)
     text = re.sub(r"'''(.*?)'''", r'\1', text)
     text = re.sub(r"''(.*?)''", r'\1', text)
-    text = re.sub(r'\[http\S+\s+(.*?)\]', r'\1', text)
-    text = re.sub(r'\{\{.*?\}\}', '', text, flags=re.DOTALL)
-    text = re.sub(r'<.*?>', '', text)
+
+    # Tabele: zostaw treść komórek, usuń składnię (proporcje stopów są w tabelach!)
+    text = re.sub(r'^\s*\{\|.*$', '', text, flags=re.MULTILINE)   # {| class="wikitable"
+    text = text.replace('|}', '')
+    text = re.sub(r'^\s*\|\+.*$', '', text, flags=re.MULTILINE)   # |+ podpis
+    text = re.sub(r'^\s*\|-.*$', '', text, flags=re.MULTILINE)    # |- separator wiersza
+    text = text.replace('||', ' | ').replace('!!', ' | ')
+    text = re.sub(r'^\s*[!|]\s*', '', text, flags=re.MULTILINE)   # marker komórki ! lub |
+
+    # HTML, magic words, sprzątanie
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'__\w+__', '', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-def create_chunks(cleaned_text: str, max_words: int = 150, overlap_words: int = 30) -> list[str]:
-    words = cleaned_text.split()
-    chunks = []
+
+def create_chunks(text: str, max_words: int = 150, overlap_words: int = 30) -> list[str]:
+    words = text.split()
     if not words:
-        return chunks
-    current_index = 0
-    while current_index < len(words):
-        chunk_words = words[current_index : current_index + max_words]
-        chunks.append(" ".join(chunk_words))
-        current_index += (max_words - overlap_words)
+        return []
+    chunks, i = [], 0
+    while i < len(words):
+        chunks.append(" ".join(words[i:i + max_words]))
+        i += max_words - overlap_words
     return chunks
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # embeddingi liczy lokalna Ollama na serwerze
-CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+def fetch_wiki_page(title: str) -> str:
+    params = {
+        "action": "query", "prop": "revisions", "rvprop": "content",
+        "rvslots": "main", "format": "json", "titles": title,
+    }
+    url = WIKI_API + "?" + urllib.parse.urlencode(params)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "vs-story-ai/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        for pid, page in data["query"]["pages"].items():
+            if pid == "-1":
+                return ""  # strona nie istnieje
+            return page["revisions"][0]["slots"]["main"]["*"]
+    except Exception as e:
+        print(f"  [fetch error] {title}: {e}")
+    return ""
 
-wiki_collection = chroma_client.get_collection(
-    name="vintage_story_wiki",
-    embedding_function=OllamaEmbeddingFunction(OLLAMA_URL)
-)
 
-def ingest_from_directory(directory_path: str):
-    for filename in os.listdir(directory_path):
-        file_path = os.path.join(directory_path, filename)
-        if os.path.isfile(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+def main():
+    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = client.get_collection(
+        name=COLLECTION_NAME,
+        embedding_function=OllamaEmbeddingFunction(OLLAMA_URL),
+    )
 
-            cleaned = clean_mediawiki_text(content)
-            chunks = create_chunks(cleaned)
+    total_chunks, ok_pages = 0, 0
+    for title in PAGES:
+        raw = fetch_wiki_page(title)
+        if not raw.strip():
+            print(f"[skip] {title} (brak strony)")
+            continue
 
-            if not chunks:
-                continue
+        chunks = create_chunks(clean_mediawiki_text(raw))
+        if not chunks:
+            print(f"[skip] {title} (pusto po czyszczeniu)")
+            continue
 
-            ids = [f"{filename}_chunk_{i}" for i in range(len(chunks))]
-            metadatas = [{"source": filename} for _ in range(len(chunks))]
+        ids = [f"wiki_{title}_{i}" for i in range(len(chunks))]
+        metas = [{"source": title, "type": "wiki"} for _ in chunks]
+        try:
+            collection.upsert(documents=chunks, ids=ids, metadatas=metas)
+            total_chunks += len(chunks)
+            ok_pages += 1
+            print(f"[ok]   {title}: {len(chunks)} chunków")
+        except Exception as e:
+            print(f"[err]  {title}: {e}")
+        time.sleep(0.2)  # nie zasypuj wiki
 
-            wiki_collection.add(
-                documents=chunks,
-                metadatas=metadatas,
-                ids=ids
-            )
-            print(f"Processed {filename} -> {len(chunks)} chunks inserted.")
+    print(f"\n[DONE] {ok_pages}/{len(PAGES)} stron, {total_chunks} chunków dodanych/zaktualizowanych")
 
-if __name__ == "__main__": ingest_from_directory("")
+
+if __name__ == "__main__":
+    main()
