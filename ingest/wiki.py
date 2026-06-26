@@ -137,9 +137,21 @@ def fetch_wiki_page(title: str) -> str:
     return ""
 
 
+def is_english_title(title: str) -> bool:
+    """Heurystyka: zachowaj tylko angielskie strony, pomiń obcojęzyczne.
+    Odrzuca tytuły ze znakami non-ASCII (np. cyrylica) oraz sufiksy tłumaczeń
+    typu '/ru', '/de', '/zh-hans'. Dzięki temu baza nie puchnie od wszystkich
+    wersji językowych wiki (a embeddingi nomic i tak są pod angielski)."""
+    if not title.isascii():
+        return False
+    if re.search(r'/[a-z]{2,3}(-[a-z]+)?$', title):
+        return False
+    return True
+
+
 def list_all_wiki_pages() -> list[str]:
-    """Pobiera tytuły WSZYSTKICH stron z głównej przestrzeni nazw wiki (API list=allpages).
-    Główna przestrzeń (namespace 0) = artykuły, bez stron Talk/User/Template/Category."""
+    """Pobiera tytuły WSZYSTKICH angielskich stron z głównej przestrzeni nazw wiki
+    (API list=allpages, namespace 0 = artykuły; bez Talk/User/Template/Category)."""
     titles, apcontinue = [], None
     while True:
         params = {
@@ -167,6 +179,7 @@ def list_all_wiki_pages() -> list[str]:
 
 def main():
     use_all = "--all" in sys.argv
+    english_only = "--en" in sys.argv  # opcjonalnie: tylko angielskie strony (pomiń inne języki)
 
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_collection(
@@ -176,7 +189,11 @@ def main():
 
     if use_all:
         pages = list_all_wiki_pages()
-        print(f"[*] Tryb --all: pobrano {len(pages)} tytułów z wiki")
+        if english_only:
+            before = len(pages)
+            pages = [t for t in pages if is_english_title(t)]
+            print(f"[*] Filtr --en: {before} -> {len(pages)} angielskich stron")
+        print(f"[*] Tryb --all: {len(pages)} stron do ingestu")
     else:
         pages = PAGES
         print(f"[*] Tryb skrócony: {len(pages)} stron z listy PAGES (użyj --all dla całej wiki)")
