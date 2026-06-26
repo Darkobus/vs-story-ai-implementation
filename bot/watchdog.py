@@ -275,13 +275,6 @@ def flush_rcon_queue():
         except Exception as e:
             print(f"--> [RCON ERROR]: {e}")
 
-def rcon_flush_loop():
-    """Jedyny wątek dotykający RCON — opróżnia kolejkę co 0,5 s.
-    Dzięki temu odpowiedź trafia na czat OD RAZU, bez czekania na kolejną linię logu."""
-    while True:
-        time.sleep(0.5)
-        flush_rcon_queue()
-
 def ask_ai(player, prompt):
     knowledge = fetch_game_knowledge(prompt)
 
@@ -374,9 +367,6 @@ def main():
     autonomy_thread = threading.Thread(target=autonomous_loop, daemon=True)
     autonomy_thread.start()
 
-    rcon_thread = threading.Thread(target=rcon_flush_loop, daemon=True)
-    rcon_thread.start()
-
     # Bez sudo — user musi być w grupie 'docker' (wymagane też przez usługę systemd).
     log_cmd = ["docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
     process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -392,6 +382,7 @@ def main():
     print("[*] Bot uruchomiony. Nasłuchiwanie logów...")
 
     for line in iter(process.stdout.readline, ''):
+        flush_rcon_queue()   # wyślij zaległe (np. reakcje na zdarzenia) — w głównym wątku
         line = line.strip()
         if not line: continue
 
@@ -410,6 +401,7 @@ def main():
             ai_response = ask_ai(player, clean_msg)
             if ai_response:
                 send_to_game(ai_response)
+                flush_rcon_queue()   # od razu na czat (główny wątek -> brak błędu signal)
             continue
 
         # --- Gracz dołącza ---
