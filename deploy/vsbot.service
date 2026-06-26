@@ -1,0 +1,18 @@
+[Unit]
+Description=Vintage Story AI bot (vs-story-ai)
+# Start dopiero, gdy sieć, Docker i Ollama są gotowe
+After=network-online.target docker.service ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bianka
+WorkingDirectory=/home/bianka/vs-ai-watchdog
+# Klucze/sekrety z .env (GEMINI_API_KEY, OLLAMA_EMBED_HOST). Wartości BEZ cudzysłowów!
+EnvironmentFile=/home/bianka/vs-ai-watchdog/.env
+ExecStart=/home/bianka/vs-ai-watchdog/venv/bin/python /home/bianka/vs-ai-watchdog/bot/watchdog.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

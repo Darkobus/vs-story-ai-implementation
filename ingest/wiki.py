@@ -11,6 +11,7 @@ nie powstaną duplikaty (te same ID nadpisują się).
 """
 
 import re
+import sys
 import json
 import time
 import urllib.request
@@ -136,15 +137,52 @@ def fetch_wiki_page(title: str) -> str:
     return ""
 
 
+def list_all_wiki_pages() -> list[str]:
+    """Pobiera tytuły WSZYSTKICH stron z głównej przestrzeni nazw wiki (API list=allpages).
+    Główna przestrzeń (namespace 0) = artykuły, bez stron Talk/User/Template/Category."""
+    titles, apcontinue = [], None
+    while True:
+        params = {
+            "action": "query", "list": "allpages", "apnamespace": "0",
+            "aplimit": "500", "format": "json",
+        }
+        if apcontinue:
+            params["apcontinue"] = apcontinue
+        url = WIKI_API + "?" + urllib.parse.urlencode(params)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "vs-story-ai/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.loads(r.read().decode())
+        except Exception as e:
+            print(f"  [allpages error] {e}")
+            break
+        titles += [p["title"] for p in data.get("query", {}).get("allpages", [])]
+        cont = data.get("continue", {}).get("apcontinue")
+        if not cont:
+            break
+        apcontinue = cont
+        time.sleep(0.2)
+    return titles
+
+
 def main():
+    use_all = "--all" in sys.argv
+
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_collection(
         name=COLLECTION_NAME,
         embedding_function=OllamaEmbeddingFunction(OLLAMA_URL),
     )
 
+    if use_all:
+        pages = list_all_wiki_pages()
+        print(f"[*] Tryb --all: pobrano {len(pages)} tytułów z wiki")
+    else:
+        pages = PAGES
+        print(f"[*] Tryb skrócony: {len(pages)} stron z listy PAGES (użyj --all dla całej wiki)")
+
     total_chunks, ok_pages = 0, 0
-    for title in PAGES:
+    for title in pages:
         raw = fetch_wiki_page(title)
         if not raw.strip():
             print(f"[skip] {title} (brak strony)")
@@ -166,7 +204,7 @@ def main():
             print(f"[err]  {title}: {e}")
         time.sleep(0.2)  # nie zasypuj wiki
 
-    print(f"\n[DONE] {ok_pages}/{len(PAGES)} stron, {total_chunks} chunków dodanych/zaktualizowanych")
+    print(f"\n[DONE] {ok_pages}/{len(pages)} stron, {total_chunks} chunków dodanych/zaktualizowanych")
 
 
 if __name__ == "__main__":

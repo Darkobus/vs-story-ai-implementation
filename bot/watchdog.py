@@ -377,7 +377,8 @@ def main():
     rcon_thread = threading.Thread(target=rcon_flush_loop, daemon=True)
     rcon_thread.start()
 
-    log_cmd = ["sudo", "docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
+    # Bez sudo — user musi być w grupie 'docker' (wymagane też przez usługę systemd).
+    log_cmd = ["docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
     process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     chat_pattern = re.compile(r"\[Server Chat\].*?\| (.*?): (.*)")
     join_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] joins\.")
