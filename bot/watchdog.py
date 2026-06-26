@@ -52,8 +52,9 @@ TRANSLATE_MODEL = "gemma3:12b" # tłumaczenie PL->EN dla RAG (ten sam lekki mode
 # Embeddingi (RAG) ZOSTAJĄ lokalne na Ollamie (nomic-embed-text), bo baza chroma_db jest
 # zbudowana tymi wektorami. Bez klucza -> wszystko działa po staremu na Ollamie.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_MODEL = "gemini-2.5-flash"                  # główny model do odpowiedzi
+GEMINI_TRANSLATE_MODEL = "gemini-2.5-flash-lite"   # lżejszy/szybszy do samego tłumaczenia PL->EN
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 USE_GEMINI = bool(GEMINI_API_KEY)
 print(f"[*] Generowanie: {('Gemini ' + GEMINI_MODEL) if USE_GEMINI else ('Ollama ' + MAIN_MODEL)}"
       f" | Embeddingi: lokalna Ollama ({EMBED_HOST})")
@@ -101,7 +102,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     def __call__(self, input: list[str]) -> Embeddings:
         embeddings = []
         for text in input:
-            data = json.dumps({"model": self.model_name, "prompt": text}).encode('utf-8')
+            data = json.dumps({"model": self.model_name, "prompt": text, "keep_alive": "30m"}).encode('utf-8')
             req = urllib.request.Request(
                 OLLAMA_EMBED_URL,
                 data=data,
@@ -128,7 +129,7 @@ except Exception as e:
     wiki_collection = None
 
 # --- Generowanie tekstu: Gemini (chmura) albo Ollama (lokalnie) ---
-def _gemini_generate(prompt, temperature, timeout):
+def _gemini_generate(prompt, temperature, timeout, model):
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -138,7 +139,7 @@ def _gemini_generate(prompt, temperature, timeout):
         },
     }
     req = urllib.request.Request(
-        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+        f"{GEMINI_API_BASE}/{model}:generateContent?key={GEMINI_API_KEY}",
         data=json.dumps(data).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
@@ -164,10 +165,10 @@ def _ollama_generate(prompt, temperature, timeout):
     return result.get("response", "").strip()
 
 
-def generate_text(prompt, temperature=0.1, timeout=90):
+def generate_text(prompt, temperature=0.1, timeout=90, model=None):
     """Generuje odpowiedź modelem. Gemini jeśli ustawiono GEMINI_API_KEY, inaczej Ollama."""
     if USE_GEMINI:
-        return _gemini_generate(prompt, temperature, timeout)
+        return _gemini_generate(prompt, temperature, timeout, model or GEMINI_MODEL)
     return _ollama_generate(prompt, temperature, timeout)
 
 
@@ -178,7 +179,7 @@ def translate_query_for_rag(prompt):
             "Translate this game-related question to English, "
             f"return ONLY the translation, no extra words: {prompt}"
         )
-        return generate_text(translate_prompt, temperature=0.1, timeout=45)
+        return generate_text(translate_prompt, temperature=0.1, timeout=45, model=GEMINI_TRANSLATE_MODEL)
     except Exception as e:
         print(f"--> [TRANSLATE ERROR]: {e}")
         return prompt  # fallback - użyj oryginału
@@ -193,13 +194,17 @@ def fetch_game_knowledge(prompt):
     if not wiki_collection:
         return ""
     try:
+        t0 = time.time()
         translated = translate_query_for_rag(prompt)
+        t1 = time.time()
         print(f"--> [RAG] Tłumaczenie: {translated}")
         results = wiki_collection.query(
             query_texts=[translated],
             n_results=RAG_N_RESULTS,
             include=["documents", "distances"]
         )
+        t2 = time.time()
+        print(f"--> [CZAS] tłumaczenie: {t1-t0:.1f}s | embed+szukanie: {t2-t1:.1f}s")
 
         docs = (results.get("documents") or [[]])[0]
         dists = (results.get("distances") or [[]])[0]
@@ -298,7 +303,9 @@ def ask_ai(player, prompt):
     full_prompt = f"{system_context}\nGracz {player}: {prompt}\nOdpowiedź:"
 
     try:
+        t_gen = time.time()
         ai_reply = generate_text(full_prompt, temperature=0.1, timeout=90)
+        print(f"--> [CZAS] generowanie odpowiedzi: {time.time()-t_gen:.1f}s")
 
         clean_reply = re.sub(r'\[CMD:\s*.*?\]', '', ai_reply).strip()
         if clean_reply:
