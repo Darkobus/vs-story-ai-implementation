@@ -40,8 +40,7 @@ ingest/         # Data ingestion scripts (run once to populate chroma_db/)
 tools/          # Dev utilities (RCON console, DB inspection, connectivity tests)
 tests/          # Manual test scripts
 config/         # Vintage Story server config JSON
-docs/           # Polish guide (poradnik.html)
-archive/        # Superseded versions (watchdog_v1/v2, ingest_wiki v1/v2, etc.)
+docs/           # Polish write-up (7 chapters + poradnik.html)
 chroma_db/      # ChromaDB vector database (gitignore candidate)
 wiki_db/        # Legacy wiki DB directory
 ```
@@ -60,7 +59,7 @@ wiki_db/        # Legacy wiki DB directory
 3. Applies toxicity filter (blocked words list)
 4. Translates Polish player queries to English using Ollama
 5. Queries ChromaDB (`vintage_story_wiki` collection) for relevant context
-6. Calls Ollama (`gemma3:27b`) with player history + RAG context
+6. Calls Ollama (`gemma3:12b` or Gemini (if `GEMINI_API_KEY` set)) with player history + RAG context
 7. Extracts `[CMD: ...]` tokens from LLM output, executes whitelisted commands (`time`, `weather`) via RCON
 8. Sends response back via RCON (`/announce`)
 9. Background thread sends autonomous "dark flavor" messages every 5–15 minutes
@@ -69,11 +68,8 @@ wiki_db/        # Legacy wiki DB directory
 
 ```python
 CONTAINER_NAME = "vs-ai-server"
-PC_IP = "192.168.0.24"
-OLLAMA_API_URL = "http://192.168.0.24:11434/api/generate"
-RCON_HOST = "127.0.0.1"
-RCON_PORT = 42421
-RCON_PASSWORD = "klawisz"
+PC_IP = os.environ.get("OLLAMA_PC_HOST", ...)
+RCON_HOST / RCON_PORT / RCON_PASSWORD  # z .env: VS_RCON_HOST, VS_RCON_PORT, VS_RCON_PASSWORD
 ALLOWED_COMMANDS = ["time", "weather"]
 ```
 

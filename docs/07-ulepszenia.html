@@ -197,13 +197,13 @@ AUTONOMOUS_MIN, AUTONOMOUS_MAX = <span class="number">1800</span>, <span class="
     <section id="bezpieczenstwo">
         <h2><span class="num">8</span> Bezpieczeństwo</h2>
         <ul>
-            <li><strong>Sekrety poza kodem.</strong> Hasło RCON (<code>"klawisz"</code>) i IP są zaszyte w plikach. Przenieś do <code>.env</code> (i dodaj do <code>.gitignore</code>).</li>
+            <li><strong>Sekrety poza kodem.</strong> Hasło RCON (<code>"********"</code>) i IP są zaszyte w plikach. Przenieś do <code>.env</code> (i dodaj do <code>.gitignore</code>).</li>
             <li><strong>Trzymaj whitelist komend.</strong> Nigdy nie rozszerzaj <code>ALLOWED_COMMANDS</code> o nic groźnego (patrz <a href="04-bot.html#komendy">Bot</a>).</li>
             <li><strong>Rate-limit per gracz.</strong> Jeden gracz nie powinien móc zasypać bota pytaniami (kolejka + limit na minutę).</li>
             <li><strong>Sanityzacja wejścia.</strong> Wiadomość gracza trafia do promptu — uważaj na próby „prompt injection" („zignoruj zasady i...").</li>
         </ul>
         <pre><code><span class="keyword">import</span> os
-RCON_PASSWORD = os.environ[<span class="string">"VS_RCON_PASSWORD"</span>]   <span class="comment"># zamiast "klawisz" w kodzie</span>
+RCON_PASSWORD = os.environ[<span class="string">"VS_RCON_PASSWORD"</span>]   <span class="comment"># zamiast "********" w kodzie</span>
 PC_IP         = os.environ.get(<span class="string">"VS_PC_IP"</span>, <span class="string">"127.0.0.1"</span>)</code></pre>
     </section>
 
