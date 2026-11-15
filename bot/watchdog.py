@@ -1,16 +1,17 @@
+import json
+import os
+import queue
+import random
 import re
 import subprocess
-import urllib.request
-import urllib.error
-import json
 import threading
 import time
-import random
-import queue
-import os
+import urllib.error
+import urllib.request
 from pathlib import Path
-import chromadb
 
+import chromadb
+from chromadb import EmbeddingFunction, Embeddings
 from mcrcon import MCRcon
 
 
@@ -100,7 +101,6 @@ RAG_N_RESULTS = 5          # ile fragmentów pobrać z bazy do oceny (więcej = 
 #           wciąż wstrzykuje bzdury -> próg za wysoki (zmniejsz, np. 270).
 RAG_MAX_DISTANCE = 300
 
-from chromadb import EmbeddingFunction, Embeddings
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
     def __init__(self, model_name="nomic-embed-text"):
@@ -248,6 +248,17 @@ def fetch_game_knowledge(prompt):
     print("--> [RAG] Brak wyników.")
     return ""
 
+# --- Wzorce linii logu serwera ---
+chat_pattern = re.compile(r"\[Server Chat\].*?\| (.*?): (.*)")
+join_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] joins\.")
+leave_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] (?:left|disconnects)\.")
+# "Message to all" — burze, inne world eventy
+msg_all_pattern = re.compile(r"\[Server Notification\] Message to all in group \d+: (.+)")
+# EventLogger mod
+player_death_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)")
+entity_kill_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] ENTITY_KILL (.+?) killed (.+)")
+
+
 def check_toxicity(message):
     msg_lower = message.lower()
     return any(word in msg_lower for word in FORBIDDEN_WORDS)
@@ -260,8 +271,9 @@ def send_to_game(message):
     match = re.search(r'\[CMD:\s*(.*?)\]', clean_msg)
     if match:
         cmd = match.group(1)
-        if any(cmd.startswith(allowed) for allowed in ALLOWED_COMMANDS):
-            commands_to_run.append(cmd)
+        # tylko komenda z białej listy, bez argumentów (LLM nie może dopisać nic więcej)
+        if cmd.strip() in ALLOWED_COMMANDS:
+            commands_to_run.append(cmd.strip())
         clean_msg = re.sub(r'\[CMD:\s*.*?\]', '', clean_msg).strip()
 
     rcon_queue.put((clean_msg, commands_to_run))
@@ -377,21 +389,14 @@ def main():
     # Bez sudo — user musi być w grupie 'docker' (wymagane też przez usługę systemd).
     log_cmd = ["docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
     process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    chat_pattern = re.compile(r"\[Server Chat\].*?\| (.*?): (.*)")
-    join_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] joins\.")
-    leave_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] (?:left|disconnects)\.")
-    # "Message to all" — burze, inne world eventy
-    msg_all_pattern = re.compile(r"\[Server Notification\] Message to all in group \d+: (.+)")
-    # EventLogger mod
-    player_death_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)")
-    entity_kill_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] ENTITY_KILL (.+?) killed (.+)")
 
     print("[*] Bot uruchomiony. Nasłuchiwanie logów...")
 
     for line in iter(process.stdout.readline, ''):
         flush_rcon_queue()   # wyślij zaległe (np. reakcje na zdarzenia) — w głównym wątku
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
 
         # --- Chat gracza ---
         match = chat_pattern.search(line)
