@@ -380,7 +380,7 @@
   "RconServer": {
     "Enabled": true,
     "Port": 42420,
-    "Password": "klawisz",
+    "Password": "CHANGE_ME",
     "MaxClients": 5
   }
 }

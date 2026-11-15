@@ -115,12 +115,12 @@ clean_msg = msg[<span class="number">3</span>:].strip()    <span class="comment"
             <li><strong>Wejście (czytanie):</strong> <code>docker logs -f</code> — strumień zdarzeń i czatu.</li>
             <li><strong>Wyjście (pisanie):</strong> <strong>RCON</strong> (protokół zdalnej konsoli) — wysyła <code>announce</code> i komendy.</li>
         </ul>
-        <pre><code><span class="keyword">with</span> MCRcon(<span class="string">"127.0.0.1"</span>, <span class="string">"klawisz"</span>, port=<span class="number">42421</span>) <span class="keyword">as</span> mcr:
+        <pre><code><span class="keyword">with</span> MCRcon(<span class="string">"127.0.0.1"</span>, <span class="string">"********"</span>, port=<span class="number">42421</span>) <span class="keyword">as</span> mcr:
     mcr.command(f<span class="string">"announce AI: {clean_msg}"</span>)   <span class="comment"># wyślij odpowiedź na czat</span>
     <span class="keyword">for</span> cmd <span class="keyword">in</span> commands_to_run:
         mcr.command(cmd)                       <span class="comment"># wykonaj np. "time set day"</span></code></pre>
         <div class="box danger">
-            <strong>Bezpieczeństwo:</strong> hasło RCON (<code>"klawisz"</code>) i adresy IP są <em>zaszyte na sztywno w kodzie</em>.
+            <strong>Bezpieczeństwo:</strong> hasło RCON (<code>"********"</code>) i adresy IP są <em>zaszyte na sztywno w kodzie</em>.
             To zła praktyka — powinny trafić do pliku <code>.env</code> / konfiguracji poza repozytorium. Patrz <a href="07-ulepszenia.html">Ulepszenia</a>.
         </div>
     </section>

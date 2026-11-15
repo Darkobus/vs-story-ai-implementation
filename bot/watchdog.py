@@ -34,11 +34,18 @@ def load_dotenv(path=None):
 load_dotenv()
 
 CONTAINER_NAME = "vs-ai-server"
-PC_IP = "192.168.0.24"          # PC z Ollamą — używany TYLKO jako fallback generowania (gdy brak Gemini)
+PC_IP = os.environ.get("OLLAMA_PC_HOST", "192.168.0.24")          # PC z Ollamą — używany TYLKO jako fallback generowania (gdy brak Gemini)
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
 # Embeddingi (RAG) liczy lokalna Ollama NA SERWERZE (malutki nomic-embed-text na CPU),
 # żeby PC mógł być WYŁĄCZONY. Domyślnie localhost; można nadpisać zmienną OLLAMA_EMBED_HOST.
 EMBED_HOST = os.environ.get("OLLAMA_EMBED_HOST", "127.0.0.1")
+
+# RCON (serwer Vintage Story) — hasło wyłącznie z .env / środowiska
+RCON_HOST = os.environ.get("VS_RCON_HOST", "127.0.0.1")
+RCON_PORT = int(os.environ.get("VS_RCON_PORT", "42421"))
+RCON_PASSWORD = os.environ.get("VS_RCON_PASSWORD", "")
+if not RCON_PASSWORD:
+    raise SystemExit("Brak VS_RCON_PASSWORD — ustaw go w .env (patrz .env.example)")
 OLLAMA_EMBED_URL = f"http://{EMBED_HOST}:11434/api/embeddings"
 MAIN_MODEL = "gemma3:12b"      # model generujący; 12b MIEŚCI SIĘ w 16GB VRAM (27b nie!)
 # Uwaga: "vs-god" nie istnieje w Ollamie. gemma3:27b (17GB) NIE mieści się w 16GB VRAM
@@ -267,7 +274,7 @@ def flush_rcon_queue():
         except queue.Empty:
             break
         try:
-            with MCRcon("127.0.0.1", "klawisz", port=42421, timeout=5) as mcr:
+            with MCRcon(RCON_HOST, RCON_PASSWORD, port=RCON_PORT, timeout=5) as mcr:
                 if clean_msg:
                     mcr.command(f"announce AI: {clean_msg}")
                 for cmd in commands_to_run:
