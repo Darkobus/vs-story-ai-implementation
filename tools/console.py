@@ -1,30 +1,20 @@
-import os
+"""Interactive RCON console.
+
+Usage:
+    python -m tools.console
+"""
+
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bot"))
-from rcon import RconClient  # noqa: E402  (bot/rcon.py — same client the bot uses)
-
-
-def _load_env():
-    env = Path(__file__).resolve().parent.parent / ".env"
-    if env.exists():
-        for line in env.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+from vsai import config
+from vsai.rcon import RconClient
 
 
 def main():
-    _load_env()
-    host = os.environ.get("VS_RCON_HOST", "127.0.0.1")
-    port = int(os.environ.get("VS_RCON_PORT", "42421"))
-    password = os.environ.get("VS_RCON_PASSWORD")
-    if not password:
+    if not config.RCON_PASSWORD:
         sys.exit("VS_RCON_PASSWORD is not set — add it to .env (see .env.example)")
 
-    client = RconClient(host, password=password, port=port, timeout=10)
+    client = RconClient(config.RCON_HOST, config.RCON_PORT, config.RCON_PASSWORD, timeout=10)
     try:
         client.run()  # check connection and password
     except Exception as e:

@@ -1,65 +1,47 @@
-import json
-import urllib.request
-from pathlib import Path
-import chromadb
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+"""Query the knowledge base and print distances — use it to calibrate RAG_MAX_DISTANCE.
 
-class OllamaEmbeddingFunction(EmbeddingFunction):
-    def __init__(self, url: str):
-        self.url = url
+Usage:
+    python -m tools.dbcheck                         # built-in sample questions
+    python -m tools.dbcheck "jak zrobić brąz" ...   # your own questions
+    python -m tools.dbcheck -n 8 --full "..."       # more hits, full chunk text
 
-    def __call__(self, input: Documents) -> Embeddings:
-        embeddings = []
-        for text in input:
-            req = urllib.request.Request(
-                self.url,
-                data=json.dumps({"model": "nomic-embed-text", "prompt": text}).encode('utf-8'),
-                headers={'Content-Type': 'application/json'}
-            )
-            try:
-                with urllib.request.urlopen(req) as response:
-                    res = json.loads(response.read().decode())
-                    embeddings.append(res["embedding"])
-            except Exception:
-                pass
-        return embeddings
+Ask questions the bot SHOULD answer and some it should not (off-topic). Set the
+threshold between the distances of good hits and of junk.
+"""
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/embeddings"  # lokalna Ollama na serwerze
-CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+import argparse
+from collections import Counter
 
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+from vsai import config, kb
 
-wiki_collection = chroma_client.get_collection(
-    name="vintage_story_wiki",
-    embedding_function=OllamaEmbeddingFunction(OLLAMA_URL)
-)
-
-queries = [
-    "jak zrobic braz metalurgy",
-    "how to make bronze metallurgy"
+SAMPLE_QUESTIONS = [
+    "jak zrobić brąz",               # alloy ratios
+    "gdzie znaleźć rudę miedzi",     # ore / prospecting
+    "jak przetrwać burzę temporalną",
+    "how to make steel",
+    "jaka jest stolica Francji",     # off-topic: every hit should be FAR
 ]
 
-for query in queries:
-    print(f"\n====================================")
-    print(f"QUERY: {query}")
-    print(f"====================================")
 
-    results = wiki_collection.query(
-        query_texts=[query],
-        n_results=5,
-        include=["documents", "distances"]
-    )
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("questions", nargs="*", default=SAMPLE_QUESTIONS)
+    parser.add_argument("-n", type=int, default=5, help="hits per question")
+    parser.add_argument("--full", action="store_true", help="print full chunk text")
+    args = parser.parse_args()
 
-    docs = results['documents'][0]
-    dists = results['distances'][0]
+    collection = kb.open_collection()
+    types = Counter(m.get("type", "?") for m in collection.get(include=["metadatas"])["metadatas"])
+    print(f"Collection '{config.COLLECTION_NAME}': {collection.count()} chunks, "
+          f"model {config.EMBED_MODEL}, metric {kb.SPACE}")
+    print("By type:", ", ".join(f"{t}={n}" for t, n in types.most_common()))
 
-    def fmt_dist(d):
-        return round(d, 3) if isinstance(d, (int, float)) else d
+    for question in args.questions:
+        print(f"\n=== {question}")
+        for i, hit in enumerate(kb.search(collection, question, n_results=args.n), 1):
+            text = hit.text if args.full else hit.text.replace("\n", " ")[:140]
+            print(f"  {i}. {hit.distance:.3f}  {hit.source}\n     {text}")
 
-    # Odległości pomagają dobrać RAG_MAX_DISTANCE w bot/watchdog.py:
-    # ustaw próg nieco POWYŻEJ odległości trafnych wyników, a PONIŻEJ nietrafionych.
-    print(f"Odległości (mniej = bliżej): {[fmt_dist(d) for d in dists]}")
 
-    for i, (doc, dist) in enumerate(zip(docs, dists)):
-        print(f"\n--- Result {i+1} | odległość={fmt_dist(dist)} ---")
-        print(doc)
+if __name__ == "__main__":
+    main()

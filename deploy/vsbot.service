@@ -10,7 +10,7 @@ User=bianka
 WorkingDirectory=/home/bianka/vs-ai-watchdog
 # Keys/secrets from .env (GEMINI_API_KEY, VS_RCON_PASSWORD, ...). Values WITHOUT quotes!
 EnvironmentFile=/home/bianka/vs-ai-watchdog/.env
-ExecStart=/home/bianka/vs-ai-watchdog/venv/bin/python /home/bianka/vs-ai-watchdog/bot/watchdog.py
+ExecStart=/home/bianka/vs-ai-watchdog/venv/bin/python -m bot.watchdog
 Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5

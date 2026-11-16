@@ -126,3 +126,34 @@ def test_gemini_text_is_extracted(watchdog):
 def test_gemini_empty_response_raises_with_reason(watchdog, result, reason):
     with pytest.raises(watchdog.GenerationError, match=reason):
         watchdog.parse_gemini_response(result)
+
+
+# --- RAG ---
+
+def _hits():
+    from vsai.kb import Hit
+    return [Hit("Bronze: copper 88-92%, tin 8-12%", 0.31, {"source": "wiki/Bronze"}),
+            Hit("Storm shelter", 0.62, {"source": "wiki/Temporal storm"})]
+
+
+def test_threshold_filters_far_hits(watchdog):
+    assert [h.source for h in watchdog.select_relevant(_hits(), threshold=0.5)] == ["wiki/Bronze"]
+
+
+def test_knowledge_uses_polish_query_without_translation(watchdog, monkeypatch):
+    queries = []
+    monkeypatch.setattr(watchdog, "wiki_collection", object())
+    monkeypatch.setattr(watchdog, "RAG_TRANSLATE", False)
+    monkeypatch.setattr(watchdog, "RAG_MAX_DISTANCE", 0.5)
+    monkeypatch.setattr(watchdog, "generate_text", lambda *a, **kw: pytest.fail("no LLM call expected"))
+    monkeypatch.setattr(watchdog.kb, "search", lambda col, q, n_results: queries.append(q) or _hits())
+    assert watchdog.fetch_game_knowledge("jak zrobić brąz") == "Bronze: copper 88-92%, tin 8-12%"
+    assert queries == ["jak zrobić brąz"]
+
+
+def test_knowledge_is_empty_when_db_errors(watchdog, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("ollama down")
+    monkeypatch.setattr(watchdog, "wiki_collection", object())
+    monkeypatch.setattr(watchdog.kb, "search", boom)
+    assert watchdog.fetch_game_knowledge("cokolwiek") == ""

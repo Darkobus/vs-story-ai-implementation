@@ -9,33 +9,38 @@ Runs 24/7 on a small home server as a systemd service.
 ## How it works
 
 ```
- docker logs -f  ──►  watchdog.py  ──►  toxicity filter
+ docker logs -f  ──►  bot/watchdog.py  ──►  trigger ("AI ...") + toxicity filter + per-player cooldown
                           │
-                          ├─► translate PL → EN (LLM, flash-lite)
-                          ├─► ChromaDB retrieval  (nomic-embed-text, distance threshold)
-                          ├─► generation: Gemini 2.5 Flash  │  fallback: local Ollama (gemma3:12b)
-                          ├─► [CMD: ...] parsing → whitelisted commands only (time, weather)
+                          ├─► ChromaDB retrieval  (bge-m3 multilingual embeddings, cosine threshold)
+                          ├─► generation: Gemini 2.5 Flash  │  or local Ollama (gemma3:12b)
+                          ├─► [CMD: ...] parsing → exact whitelisted commands only (time, weather)
                           └─► RCON  ──►  /announce in game
 ```
 
 **Knowledge base (ingest)**
-- `ingest/game_assets.py` — reads items / blocks / recipes JSON straight from the running
-  game container (`docker exec`), strips visual-only fields, chunks and embeds them.
-- `ingest/wiki.py` — fetches curated wiki pages, cleans MediaWiki markup, chunks and embeds.
+- `ingest/game_assets.py` — reads items / blocks / recipes JSON from the running game
+  container (or a local copy of the game's `assets/`), strips visual-only fields, turns
+  them into short text records, embeds them.
+- `ingest/wiki.py` — fetches wiki pages (curated list or `--all`), cleans MediaWiki markup
+  (keeps infobox data and table cells), chunks and embeds them.
 
 **Runtime (`bot/watchdog.py`)**
-- Tails the server log; player messages and events go through a queue.
-- RAG with a calibrated relevance threshold — if nothing relevant is retrieved, the bot
-  says so instead of guessing (this fixed "Minecraft-style" hallucinations).
-- RCON output is flushed from the main thread (fixes `signal only works in main thread`).
-- An autonomous loop posts short flavour messages every few minutes; event reactions
-  have per-type cooldowns.
+- Tails the server log; questions and events are handled in a thread pool, so the log
+  loop never waits on the LLM.
+- Multilingual embeddings match Polish questions against English wiki text directly — no
+  translation call. If nothing passes the relevance threshold, the bot says it doesn't know
+  instead of guessing (this fixed "Minecraft-style" hallucinations).
+- Remembers the last few question/answer pairs per player.
+- Posts a short gameplay tip every 5–15 minutes; event reactions have per-type cooldowns.
+
+**Shared code (`vsai/`)** — settings from `.env`, Ollama embeddings, knowledge-base access
+(the collection records which embedding model built it and refuses a mismatched one),
+and a thread-safe RCON client.
 
 **Extras**
 - `mods/eventlogger/` — small C# server mod that logs deaths and entity kills so the bot can react to them.
-- `train/` — synthetic data generation and a QLoRA (Unsloth) fine-tuning script for
-  Qwen2.5-7B, exported to GGUF for Ollama. Experimental.
 - `docs/` — a seven-chapter write-up (in Polish): architecture, RAG, ingest, bot, LLM, improvements.
+- `archive/train/` — an earlier fine-tuning experiment (QLoRA on Qwen2.5-7B); not used.
 
 ## Setup
 
@@ -43,27 +48,49 @@ Runs 24/7 on a small home server as a systemd service.
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # fill in VS_RCON_PASSWORD (and GEMINI_API_KEY, optional)
+ollama pull bge-m3            # embedding model
 
-python ingest/game_assets.py  # populate chroma_db/
-python ingest/wiki.py --all
-python bot/watchdog.py
+# Build the knowledge base (first step resets the collection)
+python -m ingest.game_assets --reset
+python -m ingest.wiki --all --en
+
+python -m tools.healthcheck   # embeddings + knowledge base + RCON reachable?
+python -m bot.watchdog
 ```
 
-Production: `deploy/vsbot.service` (systemd, reads secrets from `.env`).
+All commands run from the repository root. Production: `deploy/vsbot.service`
+(systemd, reads secrets from `.env`).
 
 Requires: Docker container running the Vintage Story server with RCON enabled, Ollama with
-`nomic-embed-text` for embeddings, and either a Gemini API key or a local Ollama model for generation.
+`bge-m3` for embeddings, and either a Gemini API key or a local Ollama model for generation.
+
+### Building the knowledge base on another machine
+
+Embedding ~10k chunks with bge-m3 on a CPU takes a while. You can build on a PC with a GPU
+and copy the result:
+
+```bash
+# on the PC (Ollama with bge-m3 running locally, same chromadb version as the server)
+python -m ingest.game_assets --reset --assets-dir "/path/to/Vintagestory/assets"
+python -m ingest.wiki --all --en
+# then copy chroma_db/ to the server's repository root
+```
+
+### Calibrating the relevance threshold
+
+`RAG_MAX_DISTANCE` (cosine distance, default 0.5) decides which chunks count as relevant.
+Run `python -m tools.dbcheck "question 1" "question 2" ...` with questions the bot should
+answer and some off-topic ones, and set the threshold between the two groups.
 
 ## Tools
 
-| Script | Purpose |
+| Command | Purpose |
 |---|---|
-| `tools/console.py` | interactive RCON console |
-| `tools/dbcheck.py` | inspect vector DB contents |
-| `tools/ollama_test.py` | Ollama connectivity + DB state |
-| `tests/test_translate.py` | PL→EN translation + RAG query |
-| `tests/test_prompt_db.py` | direct vector DB queries |
+| `python -m tools.healthcheck` | pre-flight check: embeddings, knowledge base, RCON |
+| `python -m tools.dbcheck [questions...]` | query the knowledge base, print distances and sources |
+| `python -m tools.console` | interactive RCON console |
+| `pytest` | unit tests (`tests/unit`) |
 
 ## Stack
 
-Python · ChromaDB · Ollama · Gemini API · RCON · Docker · systemd · C# (game mod) · Unsloth/QLoRA
+Python · ChromaDB · Ollama (bge-m3) · Gemini API · RCON · Docker · systemd · C# (game mod)

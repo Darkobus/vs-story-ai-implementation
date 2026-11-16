@@ -1,78 +1,56 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
-## Project Overview
+## Project
 
-This is an AI chatbot for a **Vintage Story multiplayer game server**. It monitors server chat via Docker logs, responds to players using a local LLM (Ollama), and integrates a vector database (ChromaDB) for game knowledge retrieval (RAG).
+In-game AI assistant for a Vintage Story multiplayer server. It tails the game server's
+Docker logs, answers players who write `AI ...` in chat (RAG over game assets + wiki in
+ChromaDB, generation via Gemini or Ollama), reacts to world events, and talks back via RCON.
 
-## Running the Bot
+Language rule: everything in the repo (code, comments, logs, docs, commits) is English.
+Only what the bot says in game is Polish — prompts are English and instruct "reply in Polish".
 
-```bash
-# Main bot
-python bot/watchdog.py
-
-# Ingest game assets into vector DB
-python ingest/game_assets.py [--container NAME] [--dry-run]
-
-# Ingest wiki pages
-python ingest/wiki.py
-
-# Test utilities
-python tests/test_translate.py    # Test Polish→English translation + RAG query
-python tests/test_prompt_db.py    # Test vector DB queries directly
-python tools/dbcheck.py           # Inspect vector DB contents
-python tools/ollama_test.py       # Test Ollama connectivity + DB state
-python tools/console.py           # Interactive RCON console
-```
-
-## Install Dependencies
+## Commands (run from the repo root)
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt     # runtime + pytest + ruff
+pytest                                  # unit tests (tests/unit)
+ruff check .                            # lint (CI runs both)
+
+python -m bot.watchdog                  # the bot
+python -m ingest.game_assets --reset [--assets-dir PATH | --container NAME] [--dry-run]
+python -m ingest.wiki [--all] [--en] [--reset]
+python -m tools.healthcheck             # embeddings + KB + RCON
+python -m tools.dbcheck "question" ...  # distances, for calibrating RAG_MAX_DISTANCE
+python -m tools.console                 # RCON console
 ```
 
-## Project Structure
+## Layout
 
 ```
-bot/            # Main bot process
-ingest/         # Data ingestion scripts (run once to populate chroma_db/)
-tools/          # Dev utilities (RCON console, DB inspection, connectivity tests)
-tests/          # Manual test scripts
-config/         # Vintage Story server config JSON
-docs/           # Polish write-up (7 chapters + poradnik.html)
-chroma_db/      # ChromaDB vector database (gitignore candidate)
-wiki_db/        # Legacy wiki DB directory
+vsai/      shared: config (.env), embeddings (Ollama /api/embed), kb (ChromaDB), rcon (client)
+bot/       watchdog.py — log loop, trigger/cooldowns, RAG, LLM calls, event reactions
+ingest/    game_assets.py (container or local assets dir), wiki.py (MediaWiki API)
+tools/     healthcheck, dbcheck, console
+tests/unit pytest; test_kb.py uses a real temporary ChromaDB with a fake embedder
+config/    Vintage Story serverconfig.json (password placeholder; RCON on 42421)
+mods/      EventLogger C# server mod (logs [WATCHDOG] PLAYER_DEATH / ENTITY_KILL lines)
+deploy/    systemd unit
+docs/      Polish HTML write-up
+archive/   retired code (fine-tuning experiment) — not maintained, excluded from lint
 ```
 
-## Architecture
+## Things to know
 
-### Data Flow
-
-**Ingestion phase** (run once or to refresh knowledge):
-- `ingest/game_assets.py` — runs `docker exec` on the game container, reads game asset JSON files (recipes, items, blocks), strips visual-only fields, chunks text, and upserts into ChromaDB (`chroma_db/`)
-- `ingest/wiki.py` — reads local wiki text files from a directory, cleans MediaWiki markup, chunks and inserts into ChromaDB
-
-**Runtime phase** (`bot/watchdog.py`):
-1. Tails Docker container logs via `docker logs --tail 0 -f <CONTAINER_NAME>`
-2. Regex-parses `[Server Chat]` lines to extract player + message
-3. Applies toxicity filter (blocked words list)
-4. Translates Polish player queries to English using Ollama
-5. Queries ChromaDB (`vintage_story_wiki` collection) for relevant context
-6. Calls Ollama (`gemma3:12b` or Gemini (if `GEMINI_API_KEY` set)) with player history + RAG context
-7. Extracts `[CMD: ...]` tokens from LLM output, executes whitelisted commands (`time`, `weather`) via RCON
-8. Sends response back via RCON (`/announce`)
-9. Background thread sends autonomous "dark flavor" messages every 5–15 minutes
-
-### Key Configuration (top of `bot/watchdog.py`)
-
-```python
-CONTAINER_NAME = "vs-ai-server"
-PC_IP = os.environ.get("OLLAMA_PC_HOST", ...)
-RCON_HOST / RCON_PORT / RCON_PASSWORD  # z .env: VS_RCON_HOST, VS_RCON_PORT, VS_RCON_PASSWORD
-ALLOWED_COMMANDS = ["time", "weather"]
-```
-
-### Path Convention
-
-All scripts use `Path(__file__).resolve().parent.parent / "chroma_db"` to locate the vector DB relative to the project root — so they work correctly regardless of the current working directory.
+- Settings come from `.env` (see `.env.example`); `vsai/config.py` loads it on import.
+  The bot checks `VS_RCON_PASSWORD` in `main()`, not at import.
+- Knowledge base: collection `vintage_story_kb`, cosine distance, embeddings computed by
+  `vsai.embeddings` and passed explicitly (no Chroma EmbeddingFunction). The collection
+  metadata stores `embed_model`; `kb.open_collection()` refuses a different model.
+  Changing `OLLAMA_EMBED_MODEL` means rebuilding with `--reset`.
+- Embedding failures raise `EmbeddingError`; never store or query zero vectors.
+- RCON: `vsai/rcon.py` (socket timeouts, lock) — safe from any thread. Don't reintroduce
+  `mcrcon`; its signal-based timeout only works in the main thread.
+- `[CMD: ...]` from the LLM runs only if it exactly equals a whitelisted command.
+- Ingest IDs include the asset's relative path; re-ingesting replaces a source's chunks.
