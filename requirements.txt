@@ -1,2 +1,4 @@
-chromadb
-pyjson5
+# Tested versions. chroma_db/ built with one chromadb version may not open with an older one,
+# so build the KB with the same version the server runs.
+chromadb==1.5.9
+pyjson5==2.0.1

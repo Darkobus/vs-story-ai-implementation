@@ -4,7 +4,8 @@ import struct
 import threading
 
 import pytest
-from rcon import RconClient, RconError
+
+from vsai.rcon import RconClient, RconError
 
 PASSWORD = "secret"
 

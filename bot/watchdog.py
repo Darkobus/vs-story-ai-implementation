@@ -8,44 +8,17 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-import chromadb
-from chromadb import EmbeddingFunction, Embeddings
-from rcon import RconClient
+from vsai import config, kb
+from vsai.rcon import RconClient
 
-
-def load_dotenv(path=None):
-    """Load simple KEY=VALUE pairs from .env into the environment (no dependency).
-    Never overrides variables that are already set (e.g. by export/systemd)."""
-    if path is None:
-        path = Path(__file__).resolve().parent.parent / ".env"
-    try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
-
-
-load_dotenv()
-
-CONTAINER_NAME = "vs-ai-server"
+CONTAINER_NAME = config.CONTAINER_NAME
 PC_IP = os.environ.get("OLLAMA_PC_HOST", "192.168.0.24")  # PC running Ollama — generation when Gemini is not used
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
-# Embeddings (RAG) come from a local Ollama ON THE SERVER (small nomic-embed-text on CPU),
-# so the PC can stay OFF. Defaults to localhost; override with OLLAMA_EMBED_HOST.
-EMBED_HOST = os.environ.get("OLLAMA_EMBED_HOST", "127.0.0.1")
-OLLAMA_EMBED_URL = f"http://{EMBED_HOST}:11434/api/embeddings"
+# Embeddings (RAG) come from a local Ollama ON THE SERVER (see vsai/config.py), so the PC can stay OFF.
 
 # RCON (Vintage Story server) — password only from .env / environment (checked in main()).
-RCON_HOST = os.environ.get("VS_RCON_HOST", "127.0.0.1")
-RCON_PORT = int(os.environ.get("VS_RCON_PORT", "42421"))
-RCON_PASSWORD = os.environ.get("VS_RCON_PASSWORD", "")
+RCON_PASSWORD = config.RCON_PASSWORD
 
 MAIN_MODEL = "gemma3:12b"  # generation model; 12b FITS in 16 GB VRAM (27b does not)
 # Note: gemma3:27b (17 GB) does not fit in 16 GB VRAM (RTX 5070 Ti) -> CPU offload ->
@@ -53,7 +26,7 @@ MAIN_MODEL = "gemma3:12b"  # generation model; 12b FITS in 16 GB VRAM (27b does 
 
 # --- Gemini (optional, so the PC does not have to generate) ---
 # Set GEMINI_API_KEY and the bot GENERATES with Gemini (cloud) instead of local Ollama.
-# Embeddings (RAG) STAY on local Ollama, because chroma_db was built with those vectors.
+# Embeddings (RAG) STAY on local Ollama, because chroma_db is built with those vectors.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"                  # main answer model
 GEMINI_TRANSLATE_MODEL = "gemini-2.5-flash-lite"   # lighter/faster model just for PL->EN translation
@@ -80,63 +53,36 @@ EVENT_COOLDOWN_SEC = 30   # minimum gap between reactions to the same event type
 # minimum gap between questions from one player (spam and Gemini cost protection)
 CHAT_COOLDOWN_SEC = int(os.environ.get("CHAT_COOLDOWN_SEC", "10"))
 
-CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
 wiki_collection = None    # set by init_knowledge_base()
-rcon = RconClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
+rcon = RconClient(config.RCON_HOST, config.RCON_PORT, RCON_PASSWORD)
 
 # --- RAG settings (hallucination guard) ---
 RAG_N_RESULTS = 5  # how many chunks to fetch for scoring (more = better grounding)
 #
-# RAG_MAX_DISTANCE = distance threshold. Chunks FARTHER than this are discarded as misses;
-# if nothing passes, the knowledge is empty and the model is told not to make things up.
+# RAG_MAX_DISTANCE = cosine distance threshold (0 = identical, 1 = unrelated, 2 = opposite).
+# Chunks FARTHER than this are discarded as misses; if nothing passes, the knowledge is
+# empty and the model is told not to make things up. Set RAG_MAX_DISTANCE=off to disable.
 #
-# Set to None to DISABLE the threshold (return the best hits regardless).
-# A badly chosen threshold can reject EVERYTHING and leave the bot without knowledge,
-# so calibrate it on real data:
-#   1. run `python tools/dbcheck.py` — prints the real distances of good hits
-#   2. set RAG_MAX_DISTANCE slightly ABOVE those distances (and below the misses)
-#
-# Mind the scale: the collection uses Chroma's default "l2" metric (squared Euclidean),
-# so values are NOT in 0..1 and depend on the embedding model (here: nomic-embed-text).
-# After switching to cosine (metadata={"hnsw:space": "cosine"} when creating the collection)
-# distances are roughly 0..2 and portable — a sensible threshold is then ~0.5-0.7.
-#
-# ENABLED and calibrated on real data from this server (tools/dbcheck.py):
-#   good hits after PL->EN translation were at ~158-280, junk at 300+.
-# Diagnosis: bot says "I don't know" to sensible questions -> threshold too low (raise, e.g. 330);
-#            still injects junk -> threshold too high (lower, e.g. 270).
-RAG_MAX_DISTANCE = 300
-
-
-class OllamaEmbeddingFunction(EmbeddingFunction):
-    """Embeddings from local Ollama. Failure -> exception (NOT a zero vector: querying
-    with zeros returns arbitrary chunks that the model would treat as knowledge)."""
-
-    def __init__(self, model_name="nomic-embed-text"):
-        self.model_name = model_name
-
-    def __call__(self, input: list[str]) -> Embeddings:
-        embeddings = []
-        for text in input:
-            data = json.dumps({"model": self.model_name, "prompt": text, "keep_alive": "30m"}).encode("utf-8")
-            req = urllib.request.Request(
-                OLLAMA_EMBED_URL, data=data, headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=45) as response:
-                embeddings.append(json.loads(response.read().decode("utf-8"))["embedding"])
-        return embeddings
+# The default is a starting point, NOT calibrated on this KB yet. Calibrate on real data:
+#   1. run `python -m tools.dbcheck "jak zrobić brąz" "gdzie znaleźć miedź" ...`
+#   2. set RAG_MAX_DISTANCE slightly ABOVE the distances of good hits (and below the misses)
+# Diagnosis: bot says "I don't know" to sensible questions -> threshold too low (raise it);
+#            still injects junk -> threshold too high (lower it).
+_threshold = os.environ.get("RAG_MAX_DISTANCE", "0.5").strip().lower()
+RAG_MAX_DISTANCE = None if _threshold in ("off", "none", "") else float(_threshold)
+# The multilingual embedding model matches Polish questions to English text directly.
+# RAG_TRANSLATE=1 re-enables the PL->EN translation call (one extra LLM request per question).
+RAG_TRANSLATE = os.environ.get("RAG_TRANSLATE", "0") == "1"
 
 
 def init_knowledge_base():
     global wiki_collection
     try:
-        client = chromadb.PersistentClient(path=CHROMA_PATH)
-        wiki_collection = client.get_collection(
-            name="vintage_story_wiki", embedding_function=OllamaEmbeddingFunction()
-        )
-        print("[*] Vector DB loaded.")
+        wiki_collection = kb.open_collection()
+        print(f"[*] Knowledge base loaded: '{config.COLLECTION_NAME}' "
+              f"({wiki_collection.count()} chunks, {config.EMBED_MODEL})")
     except Exception as e:
-        print(f"[*] WARNING: vector DB missing or failed to load: {e}")
+        print(f"[*] WARNING: knowledge base unavailable — answering without it: {e}")
         wiki_collection = None
 
 
@@ -241,49 +187,39 @@ def fetch_game_knowledge(prompt):
         return ""
     try:
         t0 = time.time()
-        translated = translate_query_for_rag(prompt)
+        query = prompt
+        if RAG_TRANSLATE:
+            query = translate_query_for_rag(prompt)
+            print(f"--> [RAG] Translation: {query}")
         t1 = time.time()
-        print(f"--> [RAG] Translation: {translated}")
-        results = wiki_collection.query(
-            query_texts=[translated],
-            n_results=RAG_N_RESULTS,
-            include=["documents", "distances"]
-        )
-        t2 = time.time()
-        print(f"--> [TIME] translation: {t1-t0:.1f}s | embed+search: {t2-t1:.1f}s")
-
-        docs = (results.get("documents") or [[]])[0]
-        dists = (results.get("distances") or [[]])[0]
-
-        if not docs:
-            print("--> [RAG] No results from the DB.")
-            return ""
-
-        # Log every distance — they are what you tune RAG_MAX_DISTANCE with
-        readable = [round(d, 3) if isinstance(d, (int, float)) else None for d in dists]
-        print(f"--> [RAG] Distances: {readable} (threshold={RAG_MAX_DISTANCE})")
-
-        if RAG_MAX_DISTANCE is None:
-            relevant = [doc for doc in docs if doc]
-        else:
-            relevant = [
-                doc for doc, dist in zip(docs, dists)
-                if doc and isinstance(dist, (int, float)) and dist < RAG_MAX_DISTANCE
-            ]
-
-        if not relevant:
-            best = min((d for d in dists if isinstance(d, (int, float))), default=None)
-            print(f"--> [RAG] No relevant chunks (best distance={best}, threshold={RAG_MAX_DISTANCE}). "
-                  f"The model will be told not to guess.")
-            return ""
-
-        knowledge = "\n".join(relevant)
-        print(f"--> [RAG] Accepted {len(relevant)}/{len(docs)} chunks:\n{knowledge[:200]}\n")
-        return knowledge
+        hits = kb.search(wiki_collection, query, n_results=RAG_N_RESULTS)
+        print(f"--> [TIME] translation: {t1-t0:.1f}s | embed+search: {time.time()-t1:.1f}s")
     except Exception as e:
         print(f"--> [VECTOR DB ERROR]: {e}")
-    print("--> [RAG] No results.")
-    return ""
+        return ""
+
+    if not hits:
+        print("--> [RAG] No results from the DB.")
+        return ""
+    # Log every distance — they are what you tune RAG_MAX_DISTANCE with
+    print(f"--> [RAG] Distances: {[(round(h.distance, 3), h.source) for h in hits]} "
+          f"(threshold={RAG_MAX_DISTANCE})")
+
+    relevant = select_relevant(hits)
+    if not relevant:
+        print(f"--> [RAG] No relevant chunks (best distance={hits[0].distance:.3f}, "
+              f"threshold={RAG_MAX_DISTANCE}). The model will be told not to guess.")
+        return ""
+    knowledge = "\n".join(h.text for h in relevant)
+    print(f"--> [RAG] Accepted {len(relevant)}/{len(hits)} chunks:\n{knowledge[:200]}\n")
+    return knowledge
+
+
+def select_relevant(hits, threshold=None):
+    threshold = RAG_MAX_DISTANCE if threshold is None else threshold
+    if threshold is None:
+        return list(hits)
+    return [h for h in hits if h.distance < threshold]
 
 
 # --- Server log line patterns ---
@@ -518,7 +454,8 @@ def main():
         raise SystemExit("VS_RCON_PASSWORD is not set — add it to .env (see .env.example)")
     print(f"[*] Generation: {('Gemini ' + GEMINI_MODEL) if USE_GEMINI else ('Ollama ' + MAIN_MODEL)}"
           f"{' (fallback: Ollama)' if USE_GEMINI and OLLAMA_FALLBACK else ''}"
-          f" | Embeddings: local Ollama ({EMBED_HOST})")
+          f" | Embeddings: {config.EMBED_MODEL} @ {config.EMBED_HOST}"
+          f" | RAG threshold: {RAG_MAX_DISTANCE}{', translate' if RAG_TRANSLATE else ''}")
     init_knowledge_base()
 
     threading.Thread(target=autonomous_loop, daemon=True).start()
