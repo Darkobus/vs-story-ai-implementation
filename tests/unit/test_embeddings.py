@@ -64,3 +64,12 @@ def test_missing_model_hints_ollama_pull(monkeypatch):
     monkeypatch.setattr(embeddings.urllib.request, "urlopen", fake_urlopen([err], []))
     with pytest.raises(EmbeddingError, match="ollama pull bge-m3"):
         embed(["a"], model="bge-m3")
+
+
+def test_negative_retries_still_makes_one_attempt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(embeddings.urllib.request, "urlopen",
+                        fake_urlopen([ConnectionRefusedError("down")], calls))
+    with pytest.raises(EmbeddingError, match="down"):
+        embed(["a"], retries=-1)
+    assert len(calls) == 1

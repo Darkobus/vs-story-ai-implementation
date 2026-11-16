@@ -70,14 +70,16 @@ def read_from_container(container: str, asset_dir: str) -> Iterator[tuple[str, s
     One `tar` stream per directory instead of one `docker exec cat` per file."""
     path = f"{CONTAINER_ASSETS_ROOT}/{asset_dir}"
     proc = subprocess.run(["docker", "exec", container, "tar", "-C", path, "-cf", "-", "."],
-                          capture_output=True)
+                          capture_output=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"docker exec tar failed for {path}: {proc.stderr.decode(errors='replace').strip()}")
     with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
         for member in tar.getmembers():
-            if member.isfile() and member.name.endswith(".json"):
-                rel = member.name.removeprefix("./")
-                yield rel, tar.extractfile(member).read().decode("utf-8", errors="replace")
+            if not (member.isfile() and member.name.endswith(".json")):
+                continue
+            handle = tar.extractfile(member)
+            if handle is not None:
+                yield member.name.removeprefix("./"), handle.read().decode("utf-8", errors="replace")
 
 
 def read_from_dir(assets_root: Path, asset_dir: str) -> Iterator[tuple[str, str]]:

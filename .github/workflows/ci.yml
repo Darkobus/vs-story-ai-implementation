@@ -16,4 +16,5 @@ jobs:
           cache: pip
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
+      - run: mypy bot ingest tools vsai
       - run: pytest -q
