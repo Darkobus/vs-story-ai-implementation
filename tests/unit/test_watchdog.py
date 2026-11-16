@@ -157,3 +157,41 @@ def test_knowledge_is_empty_when_db_errors(watchdog, monkeypatch):
     monkeypatch.setattr(watchdog, "wiki_collection", object())
     monkeypatch.setattr(watchdog.kb, "search", boom)
     assert watchdog.fetch_game_knowledge("cokolwiek") == ""
+
+
+# --- log stream ---
+
+class _FakeProcess:
+    def __init__(self, lines, returncode=0):
+        import io
+        self.stdout = io.StringIO("".join(lines))
+        self.returncode = returncode
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_log_stream_reconnects_after_container_restart(watchdog, monkeypatch):
+    streams = [["first\n", "\n"], ["second\n"]]
+    spawned, seen = [], []
+
+    def fake_popen(cmd, **kw):
+        spawned.append(cmd)
+        return _FakeProcess(streams.pop(0))
+
+    class Stop(Exception):
+        pass
+
+    def fake_sleep(seconds):
+        if not streams:
+            raise Stop  # end the test after the second stream closes
+
+    monkeypatch.setattr(watchdog.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(watchdog.time, "sleep", fake_sleep)
+    with pytest.raises(Stop):
+        watchdog.follow_server_log(seen.append)
+    assert seen == ["first", "second"]  # blank line skipped, stream reopened
+    assert len(spawned) == 2 and spawned[0][:3] == ["docker", "logs", "--tail"]

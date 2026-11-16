@@ -23,7 +23,8 @@ def embed(texts: list[str], *, model: str | None = None, url: str | None = None,
         return []
     model = model or config.EMBED_MODEL
     payload = json.dumps({"model": model, "input": texts, "keep_alive": "30m"}).encode("utf-8")
-    last_error = None
+    retries = max(retries, 0)  # a negative value would skip the loop and `raise None`
+    last_error = EmbeddingError("no attempt made")
     for attempt in range(retries + 1):
         req = urllib.request.Request(url or config.EMBED_URL, data=payload,
                                      headers={"Content-Type": "application/json"})

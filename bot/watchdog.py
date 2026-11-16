@@ -44,10 +44,10 @@ TRIGGER_PATTERN = re.compile(r"^@?ai[\s:,]+(.+)$", re.IGNORECASE | re.DOTALL)
 BOT_NAMES = {"AI", "SYSTEM"}
 
 HISTORY_EXCHANGES = 3     # how many recent question/answer pairs to remember per player
-player_memory = {}        # player -> [(question, answer), ...]
+player_memory: dict[str, list[tuple[str, str]]] = {}  # player -> [(question, answer), ...]
 memory_lock = threading.Lock()
 
-cooldowns = {}            # rate limiting (key -> time of last trigger)
+cooldowns: dict[str, float] = {}  # rate limiting (key -> time of last trigger)
 cooldown_lock = threading.Lock()
 EVENT_COOLDOWN_SEC = 30   # minimum gap between reactions to the same event type
 # minimum gap between questions from one player (spam and Gemini cost protection)
@@ -461,16 +461,28 @@ def main():
     threading.Thread(target=autonomous_loop, daemon=True).start()
     # Questions and reactions run in a thread pool — the log loop never waits for the LLM.
     pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai")
+    print("[*] Bot started. Listening to logs...")
+    follow_server_log(lambda line: handle_line(line, pool.submit))
 
+
+def follow_server_log(on_line, retry_delay=5.0):
+    """Feed every non-empty server log line to `on_line`, forever.
+
+    `docker logs -f` ends whenever the game container restarts or stops. Exiting then
+    would be a clean exit (code 0), which systemd's Restart=on-failure does NOT restart —
+    the bot would silently stay down. So reconnect instead. Lines logged while
+    disconnected are skipped (--tail 0), so old chat is never answered twice."""
     # No sudo — the user must be in the 'docker' group (the systemd service needs that too).
     log_cmd = ["docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
-    process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    print("[*] Bot started. Listening to logs...")
-
-    for line in iter(process.stdout.readline, ''):
-        line = line.strip()
-        if line:
-            handle_line(line, pool.submit)
+    while True:
+        with subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+            assert process.stdout is not None  # guaranteed by stdout=PIPE
+            for line in iter(process.stdout.readline, ''):
+                line = line.strip()
+                if line:
+                    on_line(line)
+        print(f"[*] Log stream ended (docker exit code {process.returncode}) — reconnecting in {retry_delay:.0f}s")
+        time.sleep(retry_delay)
 
 
 if __name__ == "__main__":

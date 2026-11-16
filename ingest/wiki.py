@@ -160,7 +160,8 @@ def fetch_wiki_pages(titles: list[str]) -> dict[str, str]:
 
 def list_all_wiki_pages() -> list[str]:
     """Titles of ALL non-redirect articles in the wiki's main namespace (0)."""
-    titles, cont = [], {}
+    titles: list[str] = []
+    cont: dict[str, str] = {}
     while True:
         try:
             data = _api_get({"action": "query", "list": "allpages", "apnamespace": "0",
