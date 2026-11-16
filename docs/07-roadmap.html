@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roadmap · VS AI Assistant</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html">Home</a>
+    <a href="01-architecture.html">Architecture</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-persona.html">Persona</a>
+    <a href="07-roadmap.html" class="active">Roadmap</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Part 07 · Roadmap</div>
+    <h1>Improvements — so players actually use it</h1>
+    <p class="sub">Concrete improvements ordered by <strong>impact / effort</strong>, with what is already done.
+    The biggest quality gains (threshold, multilingual embeddings, cosine) are in; the open items are mostly about players
+    finding and trusting the bot.</p>
+</header>
+
+<main>
+
+    <section>
+        <h2><span class="num">★</span> Status at a glance</h2>
+        <table>
+            <thead><tr><th>#</th><th>Improvement</th><th>Impact</th><th>Effort</th><th>Status</th></tr></thead>
+            <tbody>
+                <tr><td>1</td><td><a href="#threshold">Relevance threshold + “I don't know”</a></td><td>huge</td><td>small</td><td><span class="pill green">done</span> calibrate</td></tr>
+                <tr><td>2</td><td><a href="#multilingual">Multilingual embeddings (no translation)</a></td><td>large</td><td>medium</td><td><span class="pill green">done</span></td></tr>
+                <tr><td>3</td><td><a href="#trigger">A clear trigger + help</a></td><td>large</td><td>small</td><td><span class="pill amber">partly</span></td></tr>
+                <tr><td>4</td><td><a href="#cosine">Cosine metric</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span></td></tr>
+                <tr><td>5</td><td><a href="#hybrid">Hybrid search + reranking</a></td><td>large</td><td>larger</td><td><span class="pill">open</span></td></tr>
+                <tr><td>6</td><td><a href="#citations">Citing sources</a></td><td>medium</td><td>small</td><td><span class="pill">open</span></td></tr>
+                <tr><td>7</td><td><a href="#spam">Less spam (optional events)</a></td><td>medium</td><td>small</td><td><span class="pill">open</span></td></tr>
+                <tr><td>8</td><td><a href="#security">Security (secrets, rate limit)</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span> mostly</td></tr>
+                <tr><td>9</td><td><a href="#memory">Persistent per-player memory</a></td><td>medium</td><td>medium</td><td><span class="pill">open</span></td></tr>
+                <tr><td>10</td><td><a href="#structure">Code structure, tests, CI</a></td><td>medium</td><td>medium</td><td><span class="pill amber">partly</span></td></tr>
+                <tr><td>11</td><td><a href="#mods">Mod assets in the knowledge base</a></td><td>medium</td><td>medium</td><td><span class="pill">open</span></td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="threshold">
+        <h2><span class="num">1</span> Relevance threshold + “I don't know” <span class="pill green">done</span></h2>
+        <p>
+            <strong>The most important fix.</strong> <code>query()</code> always returns the nearest chunks, even when the question has
+            nothing to do with the database, and the bot used to paste that junk into the prompt and answer confidently.
+            Now only chunks closer than <code>RAG_MAX_DISTANCE</code> are used; if none qualify, the prompt tells the model to say
+            it has no reliable information (rule 5 in the <a href="06-persona.html#prompt">assistant prompt</a>).
+        </p>
+        <pre><code>hits = kb.search(wiki_collection, question, n_results=<span class="number">5</span>)      <span class="comment"># Hit(text, distance, metadata)</span>
+relevant = [h <span class="keyword">for</span> h <span class="keyword">in</span> hits <span class="keyword">if</span> h.distance &lt; RAG_MAX_DISTANCE]   <span class="comment"># default 0.5; "off" disables</span></code></pre>
+        <div class="box warn">
+            <strong>Still to do: calibrate it.</strong> <code>0.5</code> is a starting point, not measured on the rebuilt knowledge base.
+            Run <code>python -m tools.dbcheck "jak zrobić brąz" "gdzie znaleźć miedź" ...</code> with questions that should and should
+            not match, and set the threshold just above the good hits. Too many “I don't know” answers → raise it; junk still getting
+            through → lower it.
+        </div>
+    </section>
+
+    <section id="multilingual">
+        <h2><span class="num">2</span> Multilingual embeddings <span class="pill green">done</span></h2>
+        <p>
+            The old chain was: Polish question → <strong>LLM translates it to English</strong> → embedding → search. The embedding model
+            is now <code>bge-m3</code>, which puts Polish and English in the same vector space, so the question is searched as written.
+            The translation call is off by default (<code>RAG_TRANSLATE=1</code> brings it back). Details:
+            <a href="05-llm.html#translation">LLM</a>.
+        </p>
+        <div class="box info">
+            Embeddings run in Ollama on the game server, so retrieval no longer depends on the gaming PC being on.
+            The collection records its embedding model, and the bot refuses to search it with a different one.
+        </div>
+    </section>
+
+    <section id="trigger">
+        <h2><span class="num">3</span> A clear trigger + help <span class="pill amber">partly</span></h2>
+        <p>
+            <strong>Done:</strong> the trigger is case-insensitive and accepts <code>AI …</code>, <code>ai: …</code>, <code>ai, …</code>
+            and <code>@ai …</code> (see <a href="04-bot.html#trigger">Bot</a>).
+        </p>
+        <p><strong>Open:</strong></p>
+        <ul>
+            <li>An <code>AI help</code> command that answers with a fixed, short explanation and two or three example questions — without calling the LLM.</li>
+            <li>A guaranteed one-line hint on how to ask, appended to the join greeting (today the greeting does not mention it).</li>
+        </ul>
+        <div class="box info">
+            Long term, the cleanest trigger is an in-game <code>/ai</code> command added by a server mod (like <code>EventLogger</code>).
+            Bigger project, worth keeping in mind.
+        </div>
+    </section>
+
+    <section id="cosine">
+        <h2><span class="num">4</span> Cosine metric <span class="pill green">done</span></h2>
+        <p>
+            The collection used Chroma's default <code>l2</code> because no metric was set. The rebuilt collection,
+            <code>vintage_story_kb</code>, is created with <code>"hnsw:space": "cosine"</code>, and opening an <code>l2</code>
+            collection is refused. This was done in the same rebuild as #2. See <a href="02-rag.html#this-project">RAG</a>.
+        </p>
+    </section>
+
+    <section id="hybrid">
+        <h2><span class="num">5</span> Hybrid search + reranking <span class="pill">open</span></h2>
+        <p>
+            Pure vector search struggles with <strong>exact names and codes</strong> (<code>ingot-tinbronze</code>, a specific block name).
+            Two upgrades:
+        </p>
+        <ul>
+            <li><strong>Hybrid (vector + keywords / BM25):</strong> combines meaning with literal name matching.</li>
+            <li><strong>Reranking:</strong> fetch 15–20 candidates by vector, then a small <em>cross-encoder</em> re-sorts them and keeps the best 3.</li>
+        </ul>
+        <div class="flow">
+            <div class="flow-step">question</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">vector + BM25<br>→ 20 candidates</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">reranker<br>sorts</div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step">top 3<br>into the prompt</div>
+        </div>
+        <div class="box info">
+            This is where reaching for a ready-made retriever (LlamaIndex / LangChain) or a database with built-in hybrid search
+            (Qdrant) becomes tempting. See the alternatives in <a href="01-architecture.html#alternatives">Architecture</a>.
+        </div>
+    </section>
+
+    <section id="citations">
+        <h2><span class="num">6</span> Citing sources <span class="pill">open</span></h2>
+        <p>
+            Every chunk already has a <code>source</code> (<code>wiki/Bronze</code>,
+            <code>game_asset/recipe_alloy/tinbronze.json</code>), and wiki chunks a <code>url</code>. The bot already gets them from
+            <code>kb.search</code> and logs them. Next step: append a short source to the answer, so players can check it and trust it.
+        </p>
+        <pre><code>sources = sorted({h.source <span class="keyword">for</span> h <span class="keyword">in</span> relevant})
+<span class="comment"># e.g. append to the answer: "(source: wiki/Bronze)"</span></code></pre>
+    </section>
+
+    <section id="spam">
+        <h2><span class="num">7</span> Less spam (optional events) <span class="pill">open</span></h2>
+        <p>
+            A comment on every death and a message every 5–15 minutes can be annoying (see <a href="04-bot.html#events">Bot</a>).
+            The periodic message is already a useful tip rather than a dark one-liner; what is missing is control:
+        </p>
+        <pre><code><span class="comment"># proposed .env switches</span>
+REACT_TO_DEATHS=0        <span class="comment"># off by default</span>
+REACT_TO_JOINS=1
+TIPS_ENABLED=1
+TIPS_MIN_SEC=1800        <span class="comment"># 30–60 min instead of 5–15</span>
+TIPS_MAX_SEC=3600</code></pre>
+    </section>
+
+    <section id="security">
+        <h2><span class="num">8</span> Security <span class="pill green">done</span> mostly</h2>
+        <ul>
+            <li><strong>Secrets out of the code</strong> — done. The RCON password, hosts and the Gemini key come from <code>.env</code> (git-ignored; <code>.env.example</code> lists them). The Gemini key is sent in a header, not the URL. The old password is still in the git history, so it must be changed on the server.</li>
+            <li><strong>Command whitelist</strong> — done, now an exact match: <code>time</code> or <code>weather</code>, no arguments (see <a href="04-bot.html#commands">Bot</a>).</li>
+            <li><strong>Per-player rate limit</strong> — done: one question per <code>CHAT_COOLDOWN_SEC</code> (default 10 s), which also caps Gemini cost.</li>
+            <li><strong>Prompt injection</strong> — open. The player's message goes into the prompt; “ignore the rules and…” attempts are only limited by the whitelist, which keeps the worst case harmless.</li>
+        </ul>
+    </section>
+
+    <section id="memory">
+        <h2><span class="num">9</span> Persistent per-player memory <span class="pill">open</span></h2>
+        <p>
+            Conversation memory (the last 3 exchanges per player) lives in RAM and is lost on restart. It could be saved to disk
+            (SQLite, or a small JSON file per player) with a size limit and expiry.
+        </p>
+        <div class="box info">
+            Do not overdo it — a helper bot does not need to remember everything. A few recent exchanges per player is plenty,
+            and less context means faster and cheaper answers.
+        </div>
+    </section>
+
+    <section id="structure">
+        <h2><span class="num">10</span> Code structure, tests, CI <span class="pill amber">partly</span></h2>
+        <p><strong>Done:</strong></p>
+        <ul>
+            <li>The shared <code>vsai/</code> package (config, embeddings, knowledge base, RCON) used by the bot, ingest and tools.</li>
+            <li>Unit tests (<code>tests/unit/</code>, including a real temporary ChromaDB), and CI running ruff, mypy and pytest.</li>
+            <li>The retired fine-tuning code moved to <code>archive/</code>.</li>
+        </ul>
+        <p><strong>Open:</strong> <code>watchdog.py</code> is still one file. Splitting it along the 5 steps from
+        <a href="01-architecture.html#skeleton">Architecture</a> would make it easier to find your way around:</p>
+        <pre><code>bot/
+├── watchdog.py    <span class="comment"># main(): log loop + dispatch</span>
+├── chat.py        <span class="comment"># trigger, toxicity, cooldowns</span>
+├── rag.py         <span class="comment"># knowledge lookup, threshold, citations</span>
+├── llm.py         <span class="comment"># Gemini / Ollama, prompts</span>
+└── events.py      <span class="comment"># world-event reactions, tips</span></code></pre>
+    </section>
+
+    <section id="mods">
+        <h2><span class="num">11</span> Mod assets in the knowledge base <span class="pill">open</span></h2>
+        <p>
+            Ingest reads vanilla <code>survival/</code> assets only. Mods keep their assets in the same layout inside the archives in
+            <code>Mods/</code>. Supporting them means extracting the archives, reading each mod's asset folders, and tagging chunks with
+            the mod as their source — and changing the “replace by asset type” cleanup, which today would also delete vanilla chunks
+            of that type.
+        </p>
+    </section>
+
+    <section>
+        <h2><span class="num">✓</span> Done along the way</h2>
+        <ul>
+            <li><strong>Answers no longer wait for the next log line</strong> — a thread pool plus a thread-safe RCON client.</li>
+            <li><strong>The bot survives container restarts</strong> — the log stream reconnects instead of exiting.</li>
+            <li><strong>No zero vectors</strong> — embedding failures raise an error; ingest skips and counts the failed batch.</li>
+            <li><strong>No stale or colliding chunks</strong> — IDs include the asset path, and re-ingest replaces a source's chunks.</li>
+            <li><strong>Cleaner wiki text</strong> — infoboxes kept as data, image sizes, file links and translation tags removed.</li>
+            <li><strong>Memory remembers the questions too</strong>, not only the bot's answers.</li>
+        </ul>
+    </section>
+
+    <section>
+        <h2><span class="num">→</span> Suggested next steps</h2>
+        <ol>
+            <li><strong>Rebuild and calibrate</strong> — ingest into the new collection on the server, then tune <code>RAG_MAX_DISTANCE</code> (#1).</li>
+            <li><strong>Help command + join hint</strong> (#3) — players start using the bot at all.</li>
+            <li><strong>Citations</strong> (#6) and <strong>event switches</strong> (#7) — small, and they build trust and cut noise.</li>
+            <li><strong>Hybrid search + reranking</strong> (#5) — the next big jump in answer quality.</li>
+        </ol>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="06-persona.html">
+            <div class="dir">← Back</div>
+            <div class="ttl">06 · Persona</div>
+        </a>
+        <a class="next" href="index.html">
+            <div class="dir">Return →</div>
+            <div class="ttl">Docs home</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Documentation for <strong>vs-story-ai</strong> · <a href="index.html">back to home</a>
+</footer>
+
+</body>
+</html>

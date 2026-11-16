@@ -1,7 +1,7 @@
 /* ============================================================
-   Wspólny styl dokumentacji vs-story-ai
-   Motyw: ciemny, neutralny (asystent, nie "mroczny bóg")
-   Akcent: teal / błękit zamiast purpury
+   Shared stylesheet for the vs-story-ai docs
+   Theme: dark, neutral (an assistant, not a "dark god")
+   Accent: teal / sky instead of purple
    ============================================================ */
 
 :root {
@@ -16,7 +16,7 @@
     --text-soft: #aab4c0;
     --accent:    #2dd4bf;   /* teal */
     --accent-2:  #38bdf8;   /* sky  */
-    --accent-3:  #a78bfa;   /* fiolet (akcent pomocniczy) */
+    --accent-3:  #a78bfa;   /* violet (secondary accent) */
     --green:     #34d399;
     --amber:     #fbbf24;
     --red:       #f87171;

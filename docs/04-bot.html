@@ -1,219 +1,233 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bot (watchdog) · VS AI Asystent</title>
+<title>The bot (watchdog) · VS AI Assistant</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 
 <nav class="topnav">
-    <span class="brand">VS AI · Dokumentacja</span>
-    <a href="index.html">Start</a>
-    <a href="01-architektura.html">Architektura</a>
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html">Home</a>
+    <a href="01-architecture.html">Architecture</a>
     <a href="02-rag.html">RAG</a>
     <a href="03-ingest.html">Ingest</a>
     <a href="04-bot.html" class="active">Bot</a>
     <a href="05-llm.html">LLM</a>
-    <a href="06-asystent.html">Asystent</a>
-    <a href="07-ulepszenia.html">Ulepszenia</a>
+    <a href="06-persona.html">Persona</a>
+    <a href="07-roadmap.html">Roadmap</a>
 </nav>
 
 <header class="page">
-    <div class="eyebrow">Część 04 · Runtime</div>
-    <h1>Bot — <code>watchdog.py</code></h1>
-    <p class="sub">Proces, który działa cały czas: nasłuchuje czatu, łączy RAG z LLM i odsyła odpowiedzi.
-    To „faza B" — serce codziennej pracy.</p>
+    <div class="eyebrow">Part 04 · Runtime</div>
+    <h1>The bot — <code>watchdog.py</code></h1>
+    <p class="sub">The process that runs all the time: it follows the chat, connects RAG to the LLM and posts the answers.
+    This is “phase B” — the day-to-day work.</p>
 </header>
 
 <main>
 
     <div class="toc">
-        <strong>Na tej stronie</strong>
+        <strong>On this page</strong>
         <ol>
-            <li><a href="#petla">Główna pętla — nasłuch logów</a></li>
-            <li><a href="#trigger">Jak gracz wywołuje bota (ważne!)</a></li>
-            <li><a href="#pipeline">Od pytania do odpowiedzi</a></li>
-            <li><a href="#rcon">Most do gry: logi + RCON</a></li>
-            <li><a href="#komendy">Komendy [CMD: ...] — bezpieczeństwo</a></li>
-            <li><a href="#watki">Wątki, kolejka i cooldowny</a></li>
-            <li><a href="#zdarzenia">Reakcje na zdarzenia świata</a></li>
-            <li><a href="#alternatywy">Alternatywy</a></li>
+            <li><a href="#loop">The main loop — following the logs</a></li>
+            <li><a href="#trigger">How a player calls the bot</a></li>
+            <li><a href="#pipeline">From question to answer</a></li>
+            <li><a href="#rcon">The bridge to the game: logs + RCON</a></li>
+            <li><a href="#commands">[CMD: ...] commands — safety</a></li>
+            <li><a href="#threads">Threads and cooldowns</a></li>
+            <li><a href="#events">Reacting to world events</a></li>
+            <li><a href="#alternatives">Alternatives</a></li>
         </ol>
     </div>
 
-    <section id="petla">
-        <h2><span class="num">1</span> Główna pętla — nasłuch logów</h2>
+    <section id="loop">
+        <h2><span class="num">1</span> The main loop — following the logs</h2>
         <p>
-            Bot nie ma dostępu do API czatu gry. Zamiast tego <strong>czyta logi serwera</strong> jak strumień — odpala
-            <code>docker logs -f</code> i czyta każdą nową linię na bieżąco. To prosty, ale skuteczny trick „podsłuchu".
+            The bot has no access to a chat API. Instead it <strong>reads the server log</strong> as a stream: it runs
+            <code>docker logs -f</code> and handles every new line as it arrives. A simple but effective way to listen in.
         </p>
-        <pre><code>log_cmd = [<span class="string">"docker"</span>, <span class="string">"logs"</span>, <span class="string">"--tail"</span>, <span class="string">"0"</span>, <span class="string">"-f"</span>, CONTAINER_NAME]
-process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, text=True)
-
-<span class="keyword">for</span> line <span class="keyword">in</span> iter(process.stdout.readline, <span class="string">''</span>):   <span class="comment"># czytaj linia po linii, w nieskończoność</span>
-    flush_rcon_queue()           <span class="comment"># wyślij zaległe odpowiedzi z kolejki</span>
-    match = chat_pattern.search(line)
-    <span class="keyword">if</span> match:
-        player, msg = match.group(<span class="number">1</span>), match.group(<span class="number">2</span>)
-        ...</code></pre>
-        <p>Linie czatu rozpoznaje wyrażenie regularne, które wyłuskuje nick i treść:</p>
+        <pre><code><span class="keyword">def</span> <span class="func">follow_server_log</span>(on_line, retry_delay=<span class="number">5.0</span>):
+    log_cmd = [<span class="string">"docker"</span>, <span class="string">"logs"</span>, <span class="string">"--tail"</span>, <span class="string">"0"</span>, <span class="string">"-f"</span>, CONTAINER_NAME]
+    <span class="keyword">while</span> <span class="keyword">True</span>:
+        <span class="keyword">with</span> subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=<span class="keyword">True</span>) <span class="keyword">as</span> process:
+            <span class="keyword">for</span> line <span class="keyword">in</span> iter(process.stdout.readline, <span class="string">''</span>):
+                <span class="keyword">if</span> line.strip():
+                    on_line(line.strip())       <span class="comment"># classify the line, hand work to the pool</span>
+        <span class="comment"># the stream ended (container restarted) — reconnect instead of exiting</span>
+        time.sleep(retry_delay)</code></pre>
+        <div class="box info">
+            <strong>Why the reconnect loop matters:</strong> when the game container restarts, <code>docker logs -f</code> ends normally.
+            Before, the bot then exited with code 0 — and systemd's <code>Restart=on-failure</code> does not restart a clean exit,
+            so the bot stayed down. Now it simply reconnects.
+        </div>
+        <p>Chat lines are recognised by a regular expression that picks out the player name and the message:</p>
         <pre><code>chat_pattern = re.compile(<span class="string">r"\[Server Chat\].*?\| (.*?): (.*)"</span>)</code></pre>
     </section>
 
     <section id="trigger">
-        <h2><span class="num">2</span> Jak gracz wywołuje bota (ważne!)</h2>
+        <h2><span class="num">2</span> How a player calls the bot</h2>
         <p>
-            Bot <strong>nie odpowiada na każdą wiadomość</strong> — reaguje tylko, gdy wiadomość zaczyna się od prefiksu <code>AI </code>:
+            The bot <strong>does not answer every message</strong> — only those addressed to it. The trigger is case-insensitive and
+            accepts a few natural forms: <code>AI jak zrobić brąz?</code>, <code>ai: …</code>, <code>ai, …</code>, <code>@ai …</code>.
         </p>
-        <pre><code><span class="keyword">if</span> player <span class="keyword">in</span> [<span class="string">"AI"</span>, <span class="string">"SYSTEM"</span>] <span class="keyword">or</span> <span class="keyword">not</span> msg.startswith(<span class="string">"AI "</span>):
-    <span class="keyword">continue</span>                 <span class="comment"># ignoruj wszystko bez prefiksu "AI "</span>
-clean_msg = msg[<span class="number">3</span>:].strip()    <span class="comment"># obetnij "AI " i zostaw samo pytanie</span></code></pre>
+        <pre><code>TRIGGER_PATTERN = re.compile(<span class="string">r"^@?ai[\s:,]+(.+)$"</span>, re.IGNORECASE | re.DOTALL)
+
+<span class="keyword">def</span> <span class="func">extract_question</span>(message):
+    match = TRIGGER_PATTERN.match(message.strip())
+    <span class="keyword">return</span> match.group(<span class="number">1</span>).strip() <span class="keyword">if</span> match <span class="keyword">else</span> <span class="keyword">None</span>   <span class="comment"># None = not for the bot</span></code></pre>
         <div class="box warn">
-            <strong>To jest najmniej oczywista rzecz dla graczy.</strong> Żeby zagadać do bota, trzeba napisać dokładnie
-            <code>AI jak zrobić brąz?</code>. Nikt tego nie zgadnie bez instrukcji. W <a href="06-asystent.html">Asystencie</a> i
-            <a href="07-ulepszenia.html">Ulepszeniach</a> proponujemy czytelniejszy wyzwalacz (komenda <code>!ai</code> lub <code>@asystent</code>)
-            plus powitanie tłumaczące, jak korzystać.
+            <strong>Players still have to know about it.</strong> Nothing in the game tells them the bot exists or how to address it.
+            A help command and a short hint on join are on the <a href="07-roadmap.html#trigger">roadmap</a>.
         </div>
-        <p>Jest też prosty <strong>filtr toksyczności</strong> — wiadomości z zakazanymi słowami są ignorowane:</p>
+        <p>There is also a simple <strong>toxicity filter</strong> — questions containing banned words are ignored. The list is Polish
+        on purpose, because the players' chat is:</p>
         <pre><code>FORBIDDEN_WORDS = [<span class="string">"kys"</span>, <span class="string">"idiota"</span>, <span class="string">"debil"</span>]
-<span class="keyword">if</span> check_toxicity(clean_msg): <span class="keyword">continue</span></code></pre>
+<span class="keyword">if</span> <span class="keyword">not</span> question <span class="keyword">or</span> check_toxicity(question): <span class="keyword">return</span></code></pre>
     </section>
 
     <section id="pipeline">
-        <h2><span class="num">3</span> Od pytania do odpowiedzi</h2>
-        <p>Gdy pytanie przejdzie filtry, wykonuje się funkcja <code>ask_ai()</code> — to tutaj spina się RAG z LLM:</p>
-        <pre><code><span class="keyword">def</span> <span class="func">ask_ai</span>(player, prompt):
-    knowledge = fetch_game_knowledge(prompt)        <span class="comment"># 1. RAG: tłumacz PL→EN, szukaj w bazie</span>
-    history  = <span class="string">" | "</span>.join(player_memory[player][-<span class="number">3</span>:]) <span class="comment"># 2. pamięć: ostatnie 3 wiadomości</span>
+        <h2><span class="num">3</span> From question to answer</h2>
+        <p>Once a question passes the filters, <code>ask_ai()</code> runs — this is where RAG meets the LLM:</p>
+        <pre><code><span class="keyword">def</span> <span class="func">ask_ai</span>(player, prompt, use_memory=<span class="keyword">True</span>):
+    knowledge = fetch_game_knowledge(prompt)                  <span class="comment"># 1. RAG with a relevance threshold</span>
+    history = format_history(player) <span class="keyword">if</span> use_memory <span class="keyword">else</span> <span class="string">""</span>   <span class="comment"># 2. the last 3 Q&amp;A pairs</span>
 
     system_context = (
-        <span class="string">"Jesteś asystentem w grze Vintage Story. ..."</span>      <span class="comment"># 3. instrukcja + zasady</span>
-        f<span class="string">"Wiedza z Wiki: {knowledge} Kontekst: {history}"</span>
+        <span class="string">"You are a helpful assistant on a Vintage Story game server. Rules: ..."</span>  <span class="comment"># 3. role + rules</span>
+        f<span class="string">"Wiki knowledge: {knowledge or NO_KNOWLEDGE} "</span>
+        f<span class="string">"Conversation context: {history}"</span>
     )
-    data = {<span class="string">"model"</span>: MAIN_MODEL, <span class="string">"prompt"</span>: f<span class="string">"{system_context}\nGracz: {prompt}"</span>, ...}
-    ai_reply = ollama_generate(data)                 <span class="comment"># 4. zapytaj model</span>
-    player_memory[player].append(f<span class="string">"AI: {ai_reply}"</span>)    <span class="comment"># 5. zapamiętaj odpowiedź</span>
+    ai_reply = generate_text(f<span class="string">"{system_context}\nPlayer {player}: {prompt}\nAnswer:"</span>,
+                             temperature=<span class="number">0.1</span>)                <span class="comment"># 4. Gemini or Ollama</span>
+    remember(player, prompt, ai_reply_without_commands)        <span class="comment"># 5. remember the exchange</span>
     <span class="keyword">return</span> ai_reply</code></pre>
-        <p>A samo wyszukiwanie wiedzy (RAG) wygląda tak — z krokiem tłumaczenia po drodze:</p>
+        <p>The knowledge lookup searches with the player's own words — the multilingual embedding model matches Polish questions
+        to English chunks directly — and keeps only the chunks that are close enough:</p>
         <pre><code><span class="keyword">def</span> <span class="func">fetch_game_knowledge</span>(prompt):
-    translated = translate_query_for_rag(prompt)     <span class="comment"># PL → EN (bo baza jest po EN)</span>
-    results = wiki_collection.query(query_texts=[translated], n_results=<span class="number">2</span>)
-    <span class="keyword">return</span> <span class="string">"\n"</span>.join(results[<span class="string">'documents'</span>][<span class="number">0</span>])</code></pre>
+    hits = kb.search(wiki_collection, prompt, n_results=<span class="number">5</span>)
+    relevant = [h <span class="keyword">for</span> h <span class="keyword">in</span> hits <span class="keyword">if</span> h.distance &lt; RAG_MAX_DISTANCE]   <span class="comment"># default 0.5</span>
+    <span class="keyword">return</span> <span class="string">"\n"</span>.join(h.text <span class="keyword">for</span> h <span class="keyword">in</span> relevant)   <span class="comment"># "" → the prompt says: admit you don't know</span></code></pre>
         <div class="box info">
-            Pamięć rozmowy (<code>player_memory</code>) trzyma ostatnie wiadomości <strong>w RAM-ie</strong> — znika po restarcie bota
-            i nie jest dzielona między graczy. Dla prostego bota wystarcza; trwałą pamięć omawiamy w
-            <a href="07-ulepszenia.html">Ulepszeniach</a>.
+            Every lookup logs the distances and sources, e.g.
+            <code>[RAG] Distances: [(0.31, 'game_asset/recipe_alloy/tinbronze.json'), ...]</code> — that is what you tune
+            <code>RAG_MAX_DISTANCE</code> with. Conversation memory lives <strong>in RAM</strong>: it is lost on restart and is per player.
         </div>
     </section>
 
     <section id="rcon">
-        <h2><span class="num">4</span> Most do gry: logi + RCON</h2>
-        <p>Bot komunikuje się z grą <strong>dwukanałowo</strong>:</p>
+        <h2><span class="num">4</span> The bridge to the game: logs + RCON</h2>
+        <p>The bot talks to the game over <strong>two channels</strong>:</p>
         <ul>
-            <li><strong>Wejście (czytanie):</strong> <code>docker logs -f</code> — strumień zdarzeń i czatu.</li>
-            <li><strong>Wyjście (pisanie):</strong> <strong>RCON</strong> (protokół zdalnej konsoli) — wysyła <code>announce</code> i komendy.</li>
+            <li><strong>In (reading):</strong> <code>docker logs -f</code> — the stream of chat and events.</li>
+            <li><strong>Out (writing):</strong> <strong>RCON</strong> (the remote console protocol) — sends <code>announce</code> and commands.</li>
         </ul>
-        <pre><code><span class="keyword">with</span> MCRcon(<span class="string">"127.0.0.1"</span>, <span class="string">"********"</span>, port=<span class="number">42421</span>) <span class="keyword">as</span> mcr:
-    mcr.command(f<span class="string">"announce AI: {clean_msg}"</span>)   <span class="comment"># wyślij odpowiedź na czat</span>
-    <span class="keyword">for</span> cmd <span class="keyword">in</span> commands_to_run:
-        mcr.command(cmd)                       <span class="comment"># wykonaj np. "time set day"</span></code></pre>
-        <div class="box danger">
-            <strong>Bezpieczeństwo:</strong> hasło RCON (<code>"********"</code>) i adresy IP są <em>zaszyte na sztywno w kodzie</em>.
-            To zła praktyka — powinny trafić do pliku <code>.env</code> / konfiguracji poza repozytorium. Patrz <a href="07-ulepszenia.html">Ulepszenia</a>.
-        </div>
-    </section>
+        <pre><code>rcon = RconClient(config.RCON_HOST, config.RCON_PORT, config.RCON_PASSWORD)
 
-    <section id="komendy">
-        <h2><span class="num">5</span> Komendy <code>[CMD: ...]</code> — bezpieczeństwo</h2>
-        <p>
-            Model może w odpowiedzi poprosić o wykonanie komendy, wstawiając token <code>[CMD: time]</code>. Bot go wyłuskuje,
-            ale wykonuje <strong>tylko komendy z białej listy</strong> — to kluczowe zabezpieczenie:
-        </p>
-        <pre><code>ALLOWED_COMMANDS = [<span class="string">"time"</span>, <span class="string">"weather"</span>]   <span class="comment"># tylko te wolno wykonać</span>
-
-match = re.search(<span class="string">r'\[CMD:\s*(.*?)\]'</span>, message)
-<span class="keyword">if</span> match:
-    cmd = match.group(<span class="number">1</span>)
-    <span class="keyword">if</span> any(cmd.startswith(a) <span class="keyword">for</span> a <span class="keyword">in</span> ALLOWED_COMMANDS):  <span class="comment"># whitelist!</span>
-        commands_to_run.append(cmd)
-    clean_msg = re.sub(<span class="string">r'\[CMD:\s*.*?\]'</span>, <span class="string">''</span>, message)  <span class="comment"># usuń token z tekstu</span></code></pre>
+<span class="keyword">def</span> <span class="func">send_to_game</span>(message):
+    clean_msg, commands = parse_reply(message)
+    to_run = ([f<span class="string">"announce AI: {clean_msg}"</span>] <span class="keyword">if</span> clean_msg <span class="keyword">else</span> []) + commands
+    rcon.run(*to_run)        <span class="comment"># one connection, several commands; safe from any thread</span></code></pre>
         <div class="box tip">
-            <strong>Dlaczego whitelist jest święty:</strong> bez niej model (albo gracz, który go „przekona") mógłby wykonać
-            <code>ban</code>, <code>give</code> czy <code>op</code>. Biała lista = bot może najwyżej zmienić czas/pogodę. Trzymaj się tej zasady.
+            <strong>Why a custom RCON client:</strong> <code>vsai/rcon.py</code> uses plain socket timeouts and a lock, so worker threads
+            can send answers directly. The previous library (<code>mcrcon</code>) implements its timeout with <code>signal.alarm</code>,
+            which only works in the main thread — so answers had to wait in a queue for the next log line.
+            The password and port come from <code>.env</code> (<code>VS_RCON_PASSWORD</code>, <code>VS_RCON_PORT</code>, default 42421),
+            never from the code.
         </div>
     </section>
 
-    <section id="watki">
-        <h2><span class="num">6</span> Wątki, kolejka i cooldowny</h2>
-        <p>To jest cała „skomplikowana otoczka" wokół prostej pętli. Trzy mechanizmy:</p>
+    <section id="commands">
+        <h2><span class="num">5</span> <code>[CMD: ...]</code> commands — safety</h2>
+        <p>
+            The model can ask for a command to be run by adding a token like <code>[CMD: time]</code> to its answer. The bot extracts it
+            but runs <strong>only an exact match from the whitelist</strong> — the key safeguard:
+        </p>
+        <pre><code>ALLOWED_COMMANDS = [<span class="string">"time"</span>, <span class="string">"weather"</span>]
+
+<span class="keyword">def</span> <span class="func">parse_reply</span>(message):
+    commands = []
+    clean_msg = message.replace(<span class="string">'"'</span>, <span class="string">''</span>).replace(<span class="string">'\n'</span>, <span class="string">' '</span>)
+    match = CMD_PATTERN.search(clean_msg)
+    <span class="keyword">if</span> match <span class="keyword">and</span> match.group(<span class="number">1</span>).strip() <span class="keyword">in</span> ALLOWED_COMMANDS:   <span class="comment"># exact match, no arguments</span>
+        commands.append(match.group(<span class="number">1</span>).strip())
+    <span class="keyword">return</span> CMD_PATTERN.sub(<span class="string">''</span>, clean_msg).strip(), commands</code></pre>
+        <div class="box tip">
+            <strong>Why the whitelist is sacred:</strong> without it, the model (or a player who talks it into something) could run
+            <code>ban</code>, <code>give</code> or <code>op</code>. An exact match also matters: a prefix check would let
+            <code>time set night</code> through. With the whitelist, the worst the bot can do is report the time or weather.
+        </div>
+    </section>
+
+    <section id="threads">
+        <h2><span class="num">6</span> Threads and cooldowns</h2>
         <table>
-            <thead><tr><th>Mechanizm</th><th>Problem, który rozwiązuje</th></tr></thead>
+            <thead><tr><th>Mechanism</th><th>The problem it solves</th></tr></thead>
             <tbody>
-                <tr><td><strong>Wątki (threads)</strong></td><td>Reakcja na śmierć/burzę woła LLM (wolne). Bez osobnego wątku zablokowałoby to czytanie czatu.</td></tr>
-                <tr><td><strong>Kolejka RCON</strong></td><td>RCON nie lubi wielu wątków naraz. Wątki <em>wrzucają</em> wiadomości do kolejki, a wysyła je tylko główny wątek.</td></tr>
-                <tr><td><strong>Cooldowny</strong></td><td>Zapobiega spamowi — ten sam typ zdarzenia nie wywoła reakcji częściej niż co 30 s.</td></tr>
+                <tr><td><strong>Thread pool</strong> (4 workers)</td><td>An LLM call takes seconds. Questions and reactions run in the pool, so reading the log never waits for the model.</td></tr>
+                <tr><td><strong>Per-player chat cooldown</strong></td><td>One player cannot flood the bot: one question per <code>CHAT_COOLDOWN_SEC</code> (default 10 s).</td></tr>
+                <tr><td><strong>Event cooldowns</strong></td><td>The same event (a given player's join, death…) triggers a reaction at most every 30 s.</td></tr>
+                <tr><td><strong>Locks</strong></td><td>Memory, cooldowns and RCON are shared between worker threads, so each is guarded by a lock.</td></tr>
             </tbody>
         </table>
-        <pre><code>rcon_queue = queue.Queue()   <span class="comment"># wątki wrzucają tu, główny wątek opróżnia</span>
-
-<span class="keyword">def</span> <span class="func">is_on_cooldown</span>(event_key):       <span class="comment"># True = za wcześnie, pomiń</span>
-    <span class="keyword">if</span> time.time() - event_cooldowns.get(event_key, <span class="number">0</span>) &lt; <span class="number">30</span>:
-        <span class="keyword">return</span> <span class="keyword">True</span>
-    event_cooldowns[event_key] = time.time()
-    <span class="keyword">return</span> <span class="keyword">False</span></code></pre>
+        <pre><code><span class="keyword">def</span> <span class="func">is_on_cooldown</span>(key, seconds=EVENT_COOLDOWN_SEC):   <span class="comment"># True = too soon, skip</span>
+    now = time.time()
+    <span class="keyword">with</span> cooldown_lock:
+        <span class="keyword">if</span> now - cooldowns.get(key, <span class="number">0</span>) &lt; seconds:
+            <span class="keyword">return</span> <span class="keyword">True</span>
+        cooldowns[key] = now
+        <span class="keyword">return</span> <span class="keyword">False</span></code></pre>
     </section>
 
-    <section id="zdarzenia">
-        <h2><span class="num">7</span> Reakcje na zdarzenia świata</h2>
+    <section id="events">
+        <h2><span class="num">7</span> Reacting to world events</h2>
         <p>
-            Poza czatem bot reaguje na zdarzenia wyłapane z logów: dołączenie/wyjście gracza, burza temporalna,
-            a dzięki modowi <code>EventLogger</code> także śmierć gracza i zabicie stwora. Jest też <strong>pętla autonomiczna</strong>
-            wysyłająca losowe wiadomości co 5–15 minut.
+            Besides chat, the bot reacts to events it spots in the log: a player joining or leaving, a temporal storm starting or ending,
+            and — thanks to the <code>EventLogger</code> mod — a player dying or killing a creature. A separate
+            <strong>autonomous loop</strong> posts a short gameplay tip every 5–15 minutes.
         </p>
-        <pre><code>join_pattern  = re.compile(<span class="string">r"\[Server Event\] (.+?) \[.+\] joins\."</span>)
-death_pattern = re.compile(<span class="string">r"\[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)"</span>)  <span class="comment"># z moda</span>
+        <pre><code>join_pattern         = re.compile(<span class="string">r"\[Server Event\] (.+?) \[.+\] joins\."</span>)
+player_death_pattern = re.compile(<span class="string">r"\[Server Event\] \[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)"</span>)  <span class="comment"># from the mod</span>
 
-<span class="keyword">if</span> join_pattern.search(line) <span class="keyword">and</span> <span class="keyword">not</span> is_on_cooldown(f<span class="string">"join_{player}"</span>):
-    threading.Thread(target=react_to_event, args=(<span class="string">"join"</span>, player)).start()</code></pre>
+match = join_pattern.search(line)
+<span class="keyword">if</span> match <span class="keyword">and</span> <span class="keyword">not</span> is_on_cooldown(f<span class="string">"join_{player}"</span>):
+    submit(react_to_event, <span class="string">"join"</span>, player)</code></pre>
         <div class="box warn">
-            <strong>Dla graczy to może być męczące.</strong> Komentarze do każdej śmierci i losowy spam co kilka minut potrafią
-            irytować. Rekomendacja: uczynić to <em>opcjonalnym i rzadszym</em> (przełącznik w configu) — patrz
-            <a href="07-ulepszenia.html">Ulepszenia</a>. Mod <code>EventLogger</code> (C#) jest opisany jako osobny element w
-            <a href="01-architektura.html#pliki">mapie plików</a>.
+            <strong>This can get tiring for players.</strong> A comment on every death and a tip every few minutes is a lot.
+            Making each kind of reaction optional (an env switch) and the tips rarer is on the <a href="07-roadmap.html#spam">roadmap</a>.
         </div>
     </section>
 
-    <section id="alternatywy">
-        <h2><span class="num">8</span> Alternatywy</h2>
+    <section id="alternatives">
+        <h2><span class="num">8</span> Alternatives</h2>
         <table>
-            <thead><tr><th>Element</th><th>Obecnie</th><th>Alternatywa</th></tr></thead>
+            <thead><tr><th>Element</th><th>Now</th><th>Alternative</th></tr></thead>
             <tbody>
-                <tr><td>Czytanie czatu</td><td>Parsowanie <code>docker logs</code> regexem</td><td>Mod serwera wysyłający zdarzenia po sieci (czystsze, mniej kruche niż regex)</td></tr>
-                <tr><td>Wyzwalacz</td><td>Prefiks <code>AI </code> na czacie</td><td>Komenda gry <code>/ai</code> (przez mod) lub <code>@asystent</code></td></tr>
-                <tr><td>Współbieżność</td><td>Wątki + kolejka (ręcznie)</td><td><code>asyncio</code> — jeden pętla zdarzeń, mniej pułapek z wątkami</td></tr>
-                <tr><td>Struktura kodu</td><td>Jeden plik <code>watchdog.py</code></td><td>Rozbicie na moduły: <code>chat</code>, <code>rag</code>, <code>llm</code>, <code>rcon</code>, <code>events</code></td></tr>
-                <tr><td>Konfiguracja</td><td>Stałe na górze pliku</td><td>Plik <code>.env</code> / <code>config.toml</code> (hasła poza repo)</td></tr>
+                <tr><td>Reading chat</td><td>Parsing <code>docker logs</code> with regexes</td><td>A server mod that sends events over the network (cleaner, less brittle than regexes)</td></tr>
+                <tr><td>Trigger</td><td><code>AI</code> / <code>@ai</code> prefix in chat</td><td>An in-game <code>/ai</code> command (via a mod)</td></tr>
+                <tr><td>Concurrency</td><td>A thread pool + locks</td><td><code>asyncio</code> — one event loop, fewer threading pitfalls</td></tr>
+                <tr><td>Code structure</td><td><code>watchdog.py</code> + the shared <code>vsai/</code> package</td><td>Splitting the bot further: <code>chat</code>, <code>rag</code>, <code>llm</code>, <code>events</code></td></tr>
             </tbody>
         </table>
     </section>
 
     <div class="pager">
         <a class="prev" href="03-ingest.html">
-            <div class="dir">← Wstecz</div>
+            <div class="dir">← Back</div>
             <div class="ttl">03 · Ingest</div>
         </a>
         <a class="next" href="05-llm.html">
-            <div class="dir">Dalej →</div>
-            <div class="ttl">05 · LLM, Ollama, fine-tuning</div>
+            <div class="dir">Next →</div>
+            <div class="ttl">05 · LLM and embeddings</div>
         </a>
     </div>
 
 </main>
 
 <footer class="page">
-    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+    Documentation for <strong>vs-story-ai</strong> · <a href="index.html">back to home</a>
 </footer>
 
 </body>

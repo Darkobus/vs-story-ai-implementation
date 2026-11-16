@@ -39,7 +39,7 @@ and a thread-safe RCON client.
 
 **Extras**
 - `mods/eventlogger/` — small C# server mod that logs deaths and entity kills so the bot can react to them.
-- `docs/` — a seven-chapter write-up (in Polish): architecture, RAG, ingest, bot, LLM, improvements.
+- `docs/` — a seven-chapter HTML write-up (open `docs/index.html`): architecture, RAG, ingest, bot, LLM, persona, roadmap.
 - `archive/train/` — an earlier fine-tuning experiment (QLoRA on Qwen2.5-7B); not used.
 
 ## Setup

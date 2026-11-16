@@ -37,7 +37,7 @@ tests/unit pytest; test_kb.py uses a real temporary ChromaDB with a fake embedde
 config/    Vintage Story serverconfig.json (password placeholder; RCON on 42421)
 mods/      EventLogger C# server mod (logs [WATCHDOG] PLAYER_DEATH / ENTITY_KILL lines)
 deploy/    systemd unit
-docs/      Polish HTML write-up
+docs/      HTML write-up (architecture, RAG, ingest, bot, LLM, persona, roadmap)
 archive/   retired code (fine-tuning experiment) — not maintained, excluded from lint
 ```
 

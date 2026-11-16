@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Persona · VS AI Assistant</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html">Home</a>
+    <a href="01-architecture.html">Architecture</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-persona.html" class="active">Persona</a>
+    <a href="07-roadmap.html">Roadmap</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Part 06 · Persona</div>
+    <h1>An assistant, not a “god”</h1>
+    <p class="sub">Why the dark “god” persona got in the players' way, and how the prompts now keep the bot a plain,
+    helpful assistant that answers from the knowledge base.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>On this page</strong>
+        <ol>
+            <li><a href="#problem">Why the “god” was a bad idea</a></li>
+            <li><a href="#principle">The principle: helpful &gt; theatrical</a></li>
+            <li><a href="#where">Where the persona lives in the code</a></li>
+            <li><a href="#prompt">The answer prompt, rule by rule</a></li>
+            <li><a href="#events">The tone of event reactions</a></li>
+            <li><a href="#examples">Before and after</a></li>
+        </ol>
+    </div>
+
+    <section id="problem">
+        <h2><span class="num">1</span> Why the “god” was a bad idea</h2>
+        <p>
+            The first version of the bot played “the dark god of Vintage Story” — enigmatic, sarcastic, commenting on players' deaths.
+            Fun for five minutes, but as <strong>a tool people use every day</strong> it had real problems:
+        </p>
+        <ul>
+            <li><strong>It buried the facts.</strong> A player asks “how much tin for bronze?” and gets “Metal hides its secrets, mortal…” — the information is lost in the theatre.</li>
+            <li><strong>Gloom after a death is irritating.</strong> A sarcastic remark right after someone lost their progress grates instead of helping.</li>
+            <li><strong>It contradicted the job.</strong> The bot is there to <em>help</em>. A “god” implies superiority and distance — the opposite of an assistant.</li>
+            <li><strong>Pathos gets old fast.</strong> A matter-of-fact, friendly tone ages much better.</li>
+        </ul>
+        <div class="box note">
+            That does not mean “no flavour at all”. The assistant can be friendly and occasionally light-hearted,
+            but it <strong>helps first and decorates second</strong> — never the other way round.
+        </div>
+    </section>
+
+    <section id="principle">
+        <h2><span class="num">2</span> The principle: helpful &gt; theatrical</h2>
+        <div class="cmp">
+            <div class="before">
+                <h4>✗ The “god” persona</h4>
+                <ul style="margin:0; color:#d8c2c5;">
+                    <li>Enigmatic, dark, sarcastic</li>
+                    <li>Comments on and judges the player</li>
+                    <li>The content hidden behind pathos</li>
+                    <li>“mortals”, “the abyss”, “chaos”</li>
+                </ul>
+            </div>
+            <div class="after">
+                <h4>✓ The assistant persona</h4>
+                <ul style="margin:0; color:#bfe6d4;">
+                    <li>Matter-of-fact, friendly, concrete</li>
+                    <li>Helps and gives tips</li>
+                    <li>The answer first, a joke maybe later</li>
+                    <li>The players' own everyday language</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="where">
+        <h2><span class="num">3</span> Where the persona lives in the code</h2>
+        <p>The tone is defined only by prompt text in <code>bot/watchdog.py</code>:</p>
+        <table>
+            <thead><tr><th>Function</th><th>What it controls</th></tr></thead>
+            <tbody>
+                <tr><td><code>ask_ai()</code> → <code>system_context</code></td><td>Answers to players' questions</td></tr>
+                <tr><td><code>react_to_event()</code> → the <code>prompts</code> dict + its system line</td><td>Greetings, goodbyes, deaths, storms, kills</td></tr>
+                <tr><td><code>autonomous_loop()</code></td><td>The periodic gameplay tip</td></tr>
+            </tbody>
+        </table>
+        <div class="box info">
+            The prompts are written in English (like the rest of the code) and tell the model to <strong>reply in Polish</strong>.
+            The old persona also lived in the fine-tuning data and the <code>Modelfile</code>; those are now in <code>archive/train/</code>
+            and no longer used.
+        </div>
+    </section>
+
+    <section id="prompt">
+        <h2><span class="num">4</span> The answer prompt, rule by rule</h2>
+        <pre><code>system_context = (
+    <span class="string">"You are a helpful assistant on a Vintage Story game server. "</span>
+    <span class="string">"Rules: "</span>
+    <span class="string">"1. Always reply in Polish, naturally and in a friendly way. "</span>
+    <span class="string">"2. Give the concrete answer first, concisely, at most 4 sentences. "</span>
+    <span class="string">"3. Base your answer PRIMARILY on the 'Wiki knowledge' below - it is hard data from this game; "</span>
+    <span class="string">"if it contains numbers or recipes, give EXACTLY those values, not your own. "</span>
+    <span class="string">"4. Vintage Story is NOT Minecraft - it has its own, different mechanics. Do not carry over "</span>
+    <span class="string">"recipes, ratios, names or rules from other games. "</span>
+    <span class="string">"5. If the knowledge below does not contain the answer, say plainly that you do not have "</span>
+    <span class="string">"reliable information - do NOT guess numbers, recipes or names from memory. "</span>
+    <span class="string">"6. No asterisks, stage directions or pathos. "</span>
+    <span class="string">"7. At the end you may add the command [CMD: time] or [CMD: weather] when it fits. "</span>
+    f<span class="string">"Wiki knowledge: {knowledge or NO_KNOWLEDGE} "</span>
+    f<span class="string">"Conversation context: {history}"</span>
+)</code></pre>
+        <table>
+            <thead><tr><th>Rule</th><th>Why it is there</th></tr></thead>
+            <tbody>
+                <tr><td>1 · Polish, friendly</td><td>The players write Polish; the tone is the assistant's, not the god's.</td></tr>
+                <tr><td>2 · Answer first, ≤ 4 sentences</td><td>Chat is small; long replies scroll away.</td></tr>
+                <tr><td>3 · Use the knowledge, exact numbers</td><td>The whole point of RAG — otherwise the model “rounds” ratios from memory.</td></tr>
+                <tr><td>4 · Not Minecraft</td><td>The most common hallucination: Minecraft recipes and mechanics presented as Vintage Story's.</td></tr>
+                <tr><td>5 · Say you don't know</td><td>Works together with the relevance threshold: when no chunk is close enough, the knowledge is replaced by <code>NO_KNOWLEDGE</code>, which tells the model to admit it.</td></tr>
+                <tr><td>6 · No theatre</td><td>Keeps the old persona's habits out.</td></tr>
+                <tr><td>7 · Commands</td><td>The only commands it may suggest are the two on the whitelist (see <a href="04-bot.html#commands">Bot</a>).</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="events">
+        <h2><span class="num">5</span> The tone of event reactions</h2>
+        <p>
+            Event reactions use their own short prompts. The important change is the <strong>reaction to a death</strong>:
+            sympathy and a practical tip instead of sarcasm.
+        </p>
+        <pre><code>prompts = {
+    <span class="string">"join"</span>:        f<span class="string">"Player {context} just joined the server. Greet them briefly, warmly ... Max 1-2 sentences."</span>,
+    <span class="string">"leave"</span>:       f<span class="string">"Player {context} just left the server. Say goodbye briefly and nicely. Max 1 sentence."</span>,
+    <span class="string">"death"</span>:       f<span class="string">"Event: {context}. Comment on it with sympathy and add one short, practical tip ... Max 2 sentences."</span>,
+    <span class="string">"storm_start"</span>: <span class="string">"A temporal storm is coming. Warn the players briefly ..., remind them to take shelter."</span>,
+    <span class="string">"storm_end"</span>:   <span class="string">"The temporal storm has just passed. Say briefly that it is safe again. Max 1 sentence."</span>,
+    ...
+}
+<span class="comment"># system line for every reaction:</span>
+<span class="string">"You are a helpful, friendly assistant on a Vintage Story server. "</span>
+<span class="string">"Reply ONLY in Polish, briefly and to the point. No asterisks, stage directions, brackets or pathos."</span></code></pre>
+        <div class="box warn">
+            The periodic message is now a <em>useful</em> gameplay tip instead of a dark one-liner, but it still fires every
+            5–15 minutes and there is no switch to turn individual reactions off. That is on the <a href="07-roadmap.html#spam">roadmap</a>.
+        </div>
+    </section>
+
+    <section id="examples">
+        <h2><span class="num">6</span> Before and after</h2>
+        <p>The bot replies in Polish; the examples are translated here.</p>
+        <table>
+            <thead><tr><th>Situation</th><th>“God” (before)</th><th>Assistant (now)</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td>“how do I make bronze?”</td>
+                    <td><em>“Metal hides its secrets, mortal. The alloy is born in the fire of the crucible…”</em></td>
+                    <td><em>“Tin bronze is 8–12% tin and 88–92% copper, melted together in a crucible. You'll need a mould to cast it.”</em></td>
+                </tr>
+                <tr>
+                    <td>a player is killed by a wolf</td>
+                    <td><em>“The wolf is older than your dreams. No wonder it won.”</em></td>
+                    <td><em>“Bad luck with that wolf. Next time take a spear and stay near the light at night.”</em></td>
+                </tr>
+                <tr>
+                    <td>a player joins</td>
+                    <td><em>“Another soul wanders my lands…”</em></td>
+                    <td><em>“Hi Jan, good to see you on the server! Have a good game.”</em></td>
+                </tr>
+                <tr>
+                    <td>a question the knowledge base can't answer</td>
+                    <td><em>A confident, made-up recipe.</em></td>
+                    <td><em>“I don't have reliable information on that — the wiki is the safest place to check.”</em></td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="box tip">
+            Telling players how to call the bot when they join would be a small detail that helps a lot — today the greeting does not
+            mention it; the <a href="07-roadmap.html#trigger">roadmap</a> adds a fixed hint.
+        </div>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="05-llm.html">
+            <div class="dir">← Back</div>
+            <div class="ttl">05 · LLM</div>
+        </a>
+        <a class="next" href="07-roadmap.html">
+            <div class="dir">Next →</div>
+            <div class="ttl">07 · Roadmap</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Documentation for <strong>vs-story-ai</strong> · <a href="index.html">back to home</a>
+</footer>
+
+</body>
+</html>
