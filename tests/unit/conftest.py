@@ -1,16 +1,14 @@
-"""Import bot/watchdog.py without ChromaDB, RCON or a real .env.
+"""Import bot/watchdog.py without ChromaDB installed.
 
-watchdog.py connects to its vector DB and reads secrets at import time, so the
-unit tests stub those modules and set a dummy password first.
+watchdog.py subclasses chromadb.EmbeddingFunction at import time, so the unit tests
+stub that module. The vector DB itself is only opened in main()/init_knowledge_base().
 """
-import os
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("VS_RCON_PASSWORD", "test-only")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "bot"))
 
 
@@ -30,16 +28,9 @@ def _stub_chromadb():
     sys.modules["chromadb"] = chromadb
 
 
-def _stub_mcrcon():
-    mcrcon = types.ModuleType("mcrcon")
-    mcrcon.MCRcon = object
-    sys.modules["mcrcon"] = mcrcon
-
-
 @pytest.fixture(scope="session")
 def watchdog():
     _stub_chromadb()
-    _stub_mcrcon()
     import watchdog as wd
 
     return wd

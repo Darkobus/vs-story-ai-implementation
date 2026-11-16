@@ -1,6 +1,5 @@
 import json
 import os
-import queue
 import random
 import re
 import subprocess
@@ -8,16 +7,17 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import chromadb
 from chromadb import EmbeddingFunction, Embeddings
-from mcrcon import MCRcon
+from rcon import RconClient
 
 
 def load_dotenv(path=None):
-    """Wczytuje proste pary KEY=VALUE z pliku .env do środowiska (bez zależności).
-    Nie nadpisuje zmiennych już ustawionych (np. przez export/systemd)."""
+    """Load simple KEY=VALUE pairs from .env into the environment (no dependency).
+    Never overrides variables that are already set (e.g. by export/systemd)."""
     if path is None:
         path = Path(__file__).resolve().parent.parent / ".env"
     try:
@@ -35,124 +35,157 @@ def load_dotenv(path=None):
 load_dotenv()
 
 CONTAINER_NAME = "vs-ai-server"
-PC_IP = os.environ.get("OLLAMA_PC_HOST", "192.168.0.24")          # PC z Ollamą — używany TYLKO jako fallback generowania (gdy brak Gemini)
+PC_IP = os.environ.get("OLLAMA_PC_HOST", "192.168.0.24")  # PC running Ollama — generation when Gemini is not used
 OLLAMA_API_URL = f"http://{PC_IP}:11434/api/generate"
-# Embeddingi (RAG) liczy lokalna Ollama NA SERWERZE (malutki nomic-embed-text na CPU),
-# żeby PC mógł być WYŁĄCZONY. Domyślnie localhost; można nadpisać zmienną OLLAMA_EMBED_HOST.
+# Embeddings (RAG) come from a local Ollama ON THE SERVER (small nomic-embed-text on CPU),
+# so the PC can stay OFF. Defaults to localhost; override with OLLAMA_EMBED_HOST.
 EMBED_HOST = os.environ.get("OLLAMA_EMBED_HOST", "127.0.0.1")
+OLLAMA_EMBED_URL = f"http://{EMBED_HOST}:11434/api/embeddings"
 
-# RCON (serwer Vintage Story) — hasło wyłącznie z .env / środowiska
+# RCON (Vintage Story server) — password only from .env / environment (checked in main()).
 RCON_HOST = os.environ.get("VS_RCON_HOST", "127.0.0.1")
 RCON_PORT = int(os.environ.get("VS_RCON_PORT", "42421"))
 RCON_PASSWORD = os.environ.get("VS_RCON_PASSWORD", "")
-if not RCON_PASSWORD:
-    raise SystemExit("Brak VS_RCON_PASSWORD — ustaw go w .env (patrz .env.example)")
-OLLAMA_EMBED_URL = f"http://{EMBED_HOST}:11434/api/embeddings"
-MAIN_MODEL = "gemma3:12b"      # model generujący; 12b MIEŚCI SIĘ w 16GB VRAM (27b nie!)
-# Uwaga: "vs-god" nie istnieje w Ollamie. gemma3:27b (17GB) NIE mieści się w 16GB VRAM
-# (RTX 5070 Ti) -> offload na CPU -> timeouty translate/embed. gemma3:12b (8GB) jest szybki
-# i stabilny. Z mocniejszym GPU możesz wrócić do "gemma3:27b". Ton steruje prompt poniżej.
-TRANSLATE_MODEL = "gemma3:12b" # tłumaczenie PL->EN dla RAG (ten sam lekki model)
 
-# --- Gemini (opcjonalnie, żeby PC nie liczył odpowiedzi) ---
-# Ustaw zmienną środowiskową GEMINI_API_KEY, a bot będzie GENEROWAŁ przez Gemini (chmura)
-# zamiast lokalnej Ollamy -> PC nie liczy i nie laguje. Klucz z https://aistudio.google.com
-# Embeddingi (RAG) ZOSTAJĄ lokalne na Ollamie (nomic-embed-text), bo baza chroma_db jest
-# zbudowana tymi wektorami. Bez klucza -> wszystko działa po staremu na Ollamie.
+MAIN_MODEL = "gemma3:12b"  # generation model; 12b FITS in 16 GB VRAM (27b does not)
+# Note: gemma3:27b (17 GB) does not fit in 16 GB VRAM (RTX 5070 Ti) -> CPU offload ->
+# timeouts. gemma3:12b (8 GB) is fast and stable. Tone is controlled by the prompts below.
+
+# --- Gemini (optional, so the PC does not have to generate) ---
+# Set GEMINI_API_KEY and the bot GENERATES with Gemini (cloud) instead of local Ollama.
+# Embeddings (RAG) STAY on local Ollama, because chroma_db was built with those vectors.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"                  # główny model do odpowiedzi
-GEMINI_TRANSLATE_MODEL = "gemini-2.5-flash-lite"   # lżejszy/szybszy do samego tłumaczenia PL->EN
+GEMINI_MODEL = "gemini-2.5-flash"                  # main answer model
+GEMINI_TRANSLATE_MODEL = "gemini-2.5-flash-lite"   # lighter/faster model just for PL->EN translation
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 USE_GEMINI = bool(GEMINI_API_KEY)
-print(f"[*] Generowanie: {('Gemini ' + GEMINI_MODEL) if USE_GEMINI else ('Ollama ' + MAIN_MODEL)}"
-      f" | Embeddingi: lokalna Ollama ({EMBED_HOST})")
+# If Gemini fails (quota, outage), try Ollama on the PC. OFF by default: with the PC
+# switched off every question would additionally wait for a timeout.
+OLLAMA_FALLBACK = os.environ.get("OLLAMA_FALLBACK", "0") == "1"
 
-FORBIDDEN_WORDS = ["kys", "idiota", "debil"]
+FORBIDDEN_WORDS = ["kys", "idiota", "debil"]  # Polish chat — keep the words in Polish
 ALLOWED_COMMANDS = ["time", "weather"]
 
-player_memory = {}
-event_cooldowns = {}   # rate-limiting zdarzeń (event_key -> last_trigger_time)
-EVENT_COOLDOWN_SEC = 30  # minimum przerwa między reakcjami na ten sam typ zdarzenia
-rcon_queue = queue.Queue()  # kolejka do obsługi RCON z głównego wątku
+# Chat trigger: "AI ...", "ai: ...", "@ai, ..." (case-insensitive)
+TRIGGER_PATTERN = re.compile(r"^@?ai[\s:,]+(.+)$", re.IGNORECASE | re.DOTALL)
+BOT_NAMES = {"AI", "SYSTEM"}
+
+HISTORY_EXCHANGES = 3     # how many recent question/answer pairs to remember per player
+player_memory = {}        # player -> [(question, answer), ...]
+memory_lock = threading.Lock()
+
+cooldowns = {}            # rate limiting (key -> time of last trigger)
+cooldown_lock = threading.Lock()
+EVENT_COOLDOWN_SEC = 30   # minimum gap between reactions to the same event type
+# minimum gap between questions from one player (spam and Gemini cost protection)
+CHAT_COOLDOWN_SEC = int(os.environ.get("CHAT_COOLDOWN_SEC", "10"))
 
 CHROMA_PATH = str(Path(__file__).resolve().parent.parent / "chroma_db")
+wiki_collection = None    # set by init_knowledge_base()
+rcon = RconClient(RCON_HOST, RCON_PORT, RCON_PASSWORD)
 
-# --- Konfiguracja RAG (ochrona przed halucynacjami) ---
-RAG_N_RESULTS = 5          # ile fragmentów pobrać z bazy do oceny (więcej = lepsze ugruntowanie)
+# --- RAG settings (hallucination guard) ---
+RAG_N_RESULTS = 5  # how many chunks to fetch for scoring (more = better grounding)
 #
-# RAG_MAX_DISTANCE = próg odległości. Fragmenty DALSZE niż ta wartość są odrzucane
-# jako nietrafione, a gdy nic nie przejdzie progu -> zwracamy pustkę i model ma nie zmyślać.
+# RAG_MAX_DISTANCE = distance threshold. Chunks FARTHER than this are discarded as misses;
+# if nothing passes, the knowledge is empty and the model is told not to make things up.
 #
-# Ustaw None aby WYŁĄCZYĆ próg (zachowanie jak przed zmianą: zwróć najlepsze trafienia).
-# Źle dobrany próg mógłby odrzucać WSZYSTKO i zostawić bota bez wiedzy, dlatego kalibruje się
-# go na realnych danych:
-#   1. uruchom `python tools/dbcheck.py` — wypisze realne odległości dobrych trafień
-#   2. ustaw RAG_MAX_DISTANCE nieco POWYŻEJ tych odległości (a poniżej nietrafionych)
+# Set to None to DISABLE the threshold (return the best hits regardless).
+# A badly chosen threshold can reject EVERYTHING and leave the bot without knowledge,
+# so calibrate it on real data:
+#   1. run `python tools/dbcheck.py` — prints the real distances of good hits
+#   2. set RAG_MAX_DISTANCE slightly ABOVE those distances (and below the misses)
 #
-# UWAGA na skalę: kolekcja używa domyślnej metryki Chromy "l2" (kwadrat odl. euklidesowej),
-# więc wartości NIE są w zakresie 0..1 i zależą od modelu embeddingów (tu: nomic-embed-text).
-# Po przejściu na kosinus (metadata={"hnsw:space": "cosine"} przy tworzeniu kolekcji)
-# odległości będą w okolicy 0..2 i przenośne — wtedy sensowny próg to ~0.5-0.7.
+# Mind the scale: the collection uses Chroma's default "l2" metric (squared Euclidean),
+# so values are NOT in 0..1 and depend on the embedding model (here: nomic-embed-text).
+# After switching to cosine (metadata={"hnsw:space": "cosine"} when creating the collection)
+# distances are roughly 0..2 and portable — a sensible threshold is then ~0.5-0.7.
 #
-# WŁĄCZONE i skalibrowane na realnych danych z tego serwera (tools/dbcheck.py):
-#   dobre trafienia po tłumaczeniu PL->EN miały odległości ~158-280, śmieci 300+.
-#   300 przepuszcza trafne, a odcina nietrafione.
-# Diagnoza: bot na sensowne pytania mówi "nie wiem" -> próg za niski (zwiększ, np. 330);
-#           wciąż wstrzykuje bzdury -> próg za wysoki (zmniejsz, np. 270).
+# ENABLED and calibrated on real data from this server (tools/dbcheck.py):
+#   good hits after PL->EN translation were at ~158-280, junk at 300+.
+# Diagnosis: bot says "I don't know" to sensible questions -> threshold too low (raise, e.g. 330);
+#            still injects junk -> threshold too high (lower, e.g. 270).
 RAG_MAX_DISTANCE = 300
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
+    """Embeddings from local Ollama. Failure -> exception (NOT a zero vector: querying
+    with zeros returns arbitrary chunks that the model would treat as knowledge)."""
+
     def __init__(self, model_name="nomic-embed-text"):
         self.model_name = model_name
 
     def __call__(self, input: list[str]) -> Embeddings:
         embeddings = []
         for text in input:
-            data = json.dumps({"model": self.model_name, "prompt": text, "keep_alive": "30m"}).encode('utf-8')
+            data = json.dumps({"model": self.model_name, "prompt": text, "keep_alive": "30m"}).encode("utf-8")
             req = urllib.request.Request(
-                OLLAMA_EMBED_URL,
-                data=data,
-                headers={'Content-Type': 'application/json'}
+                OLLAMA_EMBED_URL, data=data, headers={"Content-Type": "application/json"}
             )
-            try:
-                with urllib.request.urlopen(req, timeout=45) as response:
-                    res = json.loads(response.read().decode('utf-8'))
-                    embeddings.append(res["embedding"])
-            except Exception as e:
-                print(f"Embedding error: {e}")
-                embeddings.append([0.0] * 768)
+            with urllib.request.urlopen(req, timeout=45) as response:
+                embeddings.append(json.loads(response.read().decode("utf-8"))["embedding"])
         return embeddings
 
-try:
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    wiki_collection = chroma_client.get_collection(
-        name="vintage_story_wiki",
-        embedding_function=OllamaEmbeddingFunction()
-    )
-    print("[*] Baza wektorowa zaladowana pomyslnie.")
-except Exception as e:
-    print(f"[*] OSTRZEZENIE: Brak bazy wektorowej lub blad: {e}")
-    wiki_collection = None
 
-# --- Generowanie tekstu: Gemini (chmura) albo Ollama (lokalnie) ---
+def init_knowledge_base():
+    global wiki_collection
+    try:
+        client = chromadb.PersistentClient(path=CHROMA_PATH)
+        wiki_collection = client.get_collection(
+            name="vintage_story_wiki", embedding_function=OllamaEmbeddingFunction()
+        )
+        print("[*] Vector DB loaded.")
+    except Exception as e:
+        print(f"[*] WARNING: vector DB missing or failed to load: {e}")
+        wiki_collection = None
+
+
+# --- Text generation: Gemini (cloud) or Ollama (local) ---
+class GenerationError(Exception):
+    pass
+
+
+def _http_json(req, timeout):
+    """POST JSON; on an HTTP error include the response body (the API puts the reason there)."""
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        raise GenerationError(f"HTTP {e.code}: {body}") from e
+
+
+def parse_gemini_response(result):
+    """Extract the text from a Gemini response, or raise GenerationError with the reason
+    (blocked prompt, safety filter, token limit hit before any text)."""
+    candidates = result.get("candidates") or []
+    if not candidates:
+        reason = (result.get("promptFeedback") or {}).get("blockReason", "no candidates")
+        raise GenerationError(f"Gemini returned no answer: {reason}")
+    candidate = candidates[0]
+    parts = (candidate.get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts).strip()
+    if not text:
+        raise GenerationError(f"Gemini returned an empty answer: {candidate.get('finishReason', '?')}")
+    return text
+
+
 def _gemini_generate(prompt, temperature, timeout, model):
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": temperature,
             "maxOutputTokens": 400,
-            "thinkingConfig": {"thinkingBudget": 0},  # wyłącz "myślenie" -> szybciej i taniej
+            "thinkingConfig": {"thinkingBudget": 0},  # no "thinking" -> faster and cheaper
         },
     }
     req = urllib.request.Request(
-        f"{GEMINI_API_BASE}/{model}:generateContent?key={GEMINI_API_KEY}",
+        f"{GEMINI_API_BASE}/{model}:generateContent",
         data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        # key in a header, not the URL — so it cannot leak into logs or error messages
+        headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        result = json.loads(response.read().decode("utf-8"))
-    return result["candidates"][0]["content"]["parts"][0]["text"].strip()
+    return parse_gemini_response(_http_json(req, timeout))
 
 
 def _ollama_generate(prompt, temperature, timeout):
@@ -167,20 +200,25 @@ def _ollama_generate(prompt, temperature, timeout):
         data=json.dumps(data).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        result = json.loads(response.read().decode("utf-8"))
-    return result.get("response", "").strip()
+    return _http_json(req, timeout).get("response", "").strip()
 
 
 def generate_text(prompt, temperature=0.1, timeout=90, model=None):
-    """Generuje odpowiedź modelem. Gemini jeśli ustawiono GEMINI_API_KEY, inaczej Ollama."""
-    if USE_GEMINI:
+    """Generate with Gemini if GEMINI_API_KEY is set, otherwise Ollama.
+    With OLLAMA_FALLBACK=1 a Gemini failure falls back to Ollama."""
+    if not USE_GEMINI:
+        return _ollama_generate(prompt, temperature, timeout)
+    try:
         return _gemini_generate(prompt, temperature, timeout, model or GEMINI_MODEL)
-    return _ollama_generate(prompt, temperature, timeout)
+    except Exception as e:
+        if not OLLAMA_FALLBACK:
+            raise
+        print(f"--> [GEMINI ERROR] {e} — falling back to Ollama")
+        return _ollama_generate(prompt, temperature, timeout)
 
 
 def translate_query_for_rag(prompt):
-    """Tłumaczy pytanie gracza na angielski dla RAG (Gemini lub Ollama)."""
+    """Translate the player's question to English for RAG (Gemini or Ollama)."""
     try:
         translate_prompt = (
             "Translate this game-related question to English, "
@@ -189,14 +227,15 @@ def translate_query_for_rag(prompt):
         return generate_text(translate_prompt, temperature=0.1, timeout=45, model=GEMINI_TRANSLATE_MODEL)
     except Exception as e:
         print(f"--> [TRANSLATE ERROR]: {e}")
-        return prompt  # fallback - użyj oryginału
+        return prompt  # fall back to the original text
+
 
 def fetch_game_knowledge(prompt):
-    """Wyszukuje wiedzę w bazie wektorowej z PROGIEM TRAFNOŚCI.
+    """Search the vector DB with a RELEVANCE THRESHOLD.
 
-    Zwraca tylko fragmenty bliższe niż RAG_MAX_DISTANCE. Jeśli żaden nie jest
-    wystarczająco trafny -> zwraca "" (pusty string), a prompt każe modelowi
-    przyznać, że nie zna odpowiedzi, zamiast zmyślać na bazie nietrafionych danych.
+    Returns only chunks closer than RAG_MAX_DISTANCE. If none is relevant enough it
+    returns "" and the prompt tells the model to admit it does not know, instead of
+    making things up from unrelated chunks.
     """
     if not wiki_collection:
         return ""
@@ -204,31 +243,29 @@ def fetch_game_knowledge(prompt):
         t0 = time.time()
         translated = translate_query_for_rag(prompt)
         t1 = time.time()
-        print(f"--> [RAG] Tłumaczenie: {translated}")
+        print(f"--> [RAG] Translation: {translated}")
         results = wiki_collection.query(
             query_texts=[translated],
             n_results=RAG_N_RESULTS,
             include=["documents", "distances"]
         )
         t2 = time.time()
-        print(f"--> [CZAS] tłumaczenie: {t1-t0:.1f}s | embed+szukanie: {t2-t1:.1f}s")
+        print(f"--> [TIME] translation: {t1-t0:.1f}s | embed+search: {t2-t1:.1f}s")
 
         docs = (results.get("documents") or [[]])[0]
         dists = (results.get("distances") or [[]])[0]
 
         if not docs:
-            print("--> [RAG] Brak wyników z bazy.")
+            print("--> [RAG] No results from the DB.")
             return ""
 
-        # Loguj wszystkie odległości — to one pomagają dostroić RAG_MAX_DISTANCE
+        # Log every distance — they are what you tune RAG_MAX_DISTANCE with
         readable = [round(d, 3) if isinstance(d, (int, float)) else None for d in dists]
-        print(f"--> [RAG] Odległości: {readable} (próg={RAG_MAX_DISTANCE})")
+        print(f"--> [RAG] Distances: {readable} (threshold={RAG_MAX_DISTANCE})")
 
         if RAG_MAX_DISTANCE is None:
-            # Próg wyłączony — zwróć wszystkie niepuste dokumenty (zachowanie jak przed zmianą).
             relevant = [doc for doc in docs if doc]
         else:
-            # Zostaw tylko niepuste fragmenty bliższe niż próg.
             relevant = [
                 doc for doc, dist in zip(docs, dists)
                 if doc and isinstance(dist, (int, float)) and dist < RAG_MAX_DISTANCE
@@ -236,135 +273,159 @@ def fetch_game_knowledge(prompt):
 
         if not relevant:
             best = min((d for d in dists if isinstance(d, (int, float))), default=None)
-            print(f"--> [RAG] Brak trafnych fragmentów (najlepsza odległość={best}, próg={RAG_MAX_DISTANCE}). "
-                  f"Model dostanie info, że ma nie zmyślać.")
+            print(f"--> [RAG] No relevant chunks (best distance={best}, threshold={RAG_MAX_DISTANCE}). "
+                  f"The model will be told not to guess.")
             return ""
 
         knowledge = "\n".join(relevant)
-        print(f"--> [RAG] Przyjęto {len(relevant)}/{len(docs)} fragmentów:\n{knowledge[:200]}\n")
+        print(f"--> [RAG] Accepted {len(relevant)}/{len(docs)} chunks:\n{knowledge[:200]}\n")
         return knowledge
     except Exception as e:
         print(f"--> [VECTOR DB ERROR]: {e}")
-    print("--> [RAG] Brak wyników.")
+    print("--> [RAG] No results.")
     return ""
 
-# --- Wzorce linii logu serwera ---
+
+# --- Server log line patterns ---
 chat_pattern = re.compile(r"\[Server Chat\].*?\| (.*?): (.*)")
 join_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] joins\.")
 leave_pattern = re.compile(r"\[Server Event\] (.+?) \[.+\] (?:left|disconnects)\.")
-# "Message to all" — burze, inne world eventy
+# "Message to all" — storms and other world events
 msg_all_pattern = re.compile(r"\[Server Notification\] Message to all in group \d+: (.+)")
 # EventLogger mod
 player_death_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)")
 entity_kill_pattern = re.compile(r"\[Server Event\] \[WATCHDOG\] ENTITY_KILL (.+?) killed (.+)")
+CMD_PATTERN = re.compile(r"\[CMD:\s*(.*?)\]")
 
 
 def check_toxicity(message):
     msg_lower = message.lower()
     return any(word in msg_lower for word in FORBIDDEN_WORDS)
 
-def send_to_game(message):
-    """Parsuje wiadomość i wrzuca do kolejki RCON (bezpieczne z wątków tła)."""
-    commands_to_run = []
+
+def extract_question(message):
+    """Return the question if the message addresses the bot ("AI ...", "ai: ...", "@ai ..."), else None."""
+    match = TRIGGER_PATTERN.match(message.strip())
+    return match.group(1).strip() if match else None
+
+
+def parse_reply(message):
+    """Split a model reply into chat text and whitelisted commands."""
+    commands = []
     clean_msg = message.replace('"', '').replace('\n', ' ')
-
-    match = re.search(r'\[CMD:\s*(.*?)\]', clean_msg)
+    match = CMD_PATTERN.search(clean_msg)
     if match:
-        cmd = match.group(1)
-        # tylko komenda z białej listy, bez argumentów (LLM nie może dopisać nic więcej)
-        if cmd.strip() in ALLOWED_COMMANDS:
-            commands_to_run.append(cmd.strip())
-        clean_msg = re.sub(r'\[CMD:\s*.*?\]', '', clean_msg).strip()
+        cmd = match.group(1).strip()
+        # only an exact whitelisted command, no arguments (the LLM cannot append anything)
+        if cmd in ALLOWED_COMMANDS:
+            commands.append(cmd)
+    clean_msg = CMD_PATTERN.sub('', clean_msg).strip()
+    return clean_msg, commands
 
-    rcon_queue.put((clean_msg, commands_to_run))
 
-def flush_rcon_queue():
-    """Wywołuj tylko z głównego wątku — przetwarza kolejkę RCON."""
-    while not rcon_queue.empty():
-        try:
-            clean_msg, commands_to_run = rcon_queue.get_nowait()
-        except queue.Empty:
-            break
-        try:
-            with MCRcon(RCON_HOST, RCON_PASSWORD, port=RCON_PORT, timeout=5) as mcr:
-                if clean_msg:
-                    mcr.command(f"announce AI: {clean_msg}")
-                for cmd in commands_to_run:
-                    mcr.command(cmd)
-        except Exception as e:
-            print(f"--> [RCON ERROR]: {e}")
+def send_to_game(message):
+    """Post the reply to chat (/announce) and run allowed commands. Safe from any thread."""
+    clean_msg, commands = parse_reply(message)
+    to_run = ([f"announce AI: {clean_msg}"] if clean_msg else []) + commands
+    if not to_run:
+        return
+    try:
+        rcon.run(*to_run)
+    except Exception as e:
+        print(f"--> [RCON ERROR]: {e}")
 
-def ask_ai(player, prompt):
+
+def format_history(player):
+    with memory_lock:
+        exchanges = list(player_memory.get(player, []))
+    return " | ".join(f"Player: {q} / AI: {a}" for q, a in exchanges)
+
+
+def remember(player, question, answer):
+    with memory_lock:
+        history = player_memory.setdefault(player, [])
+        history.append((question, answer))
+        del history[:-HISTORY_EXCHANGES]
+
+
+# Prompts are written in English; the bot always ANSWERS players in Polish.
+NO_KNOWLEDGE = ("No matching knowledge in the database - tell the player plainly that you "
+                "do not have reliable information on this, instead of guessing.")
+
+
+def ask_ai(player, prompt, use_memory=True):
     knowledge = fetch_game_knowledge(prompt)
-
-    if player not in player_memory:
-        player_memory[player] = []
-
-    history = " | ".join(player_memory[player][-3:])
+    history = format_history(player) if use_memory else ""
 
     system_context = (
-        "Jesteś pomocnym asystentem na serwerze gry Vintage Story. "
-        "Zasady: "
-        "1. Odpowiadaj wyłącznie po polsku, naturalnie i przyjaźnie. "
-        "2. Najpierw konkretna odpowiedź, zwięźle, maksymalnie 4 zdania. "
-        "3. Opieraj się PRZEDE WSZYSTKIM na 'Wiedzy z Wiki' poniżej - to twarde dane z tej gry; "
-        "jeśli są tam liczby lub receptury, podaj DOKŁADNIE te wartości, nie własne. "
-        "4. Vintage Story to NIE Minecraft - ma własne, inne mechaniki. Nie przenoś receptur, "
-        "proporcji, nazw ani zasad z innych gier. "
-        "5. Jeśli w wiedzy poniżej nie ma odpowiedzi, napisz wprost, że nie masz pewnej informacji - "
-        "NIE zgaduj liczb, receptur ani nazw z pamięci. "
-        "6. Bez gwiazdek, nawiasów scenicznych i patosu. "
-        "7. Na końcu możesz dodać komendę [CMD: time] lub [CMD: weather], gdy pasuje. "
-        f"Wiedza z Wiki: {knowledge if knowledge else 'Brak dopasowanej wiedzy w bazie - powiedz graczowi wprost, że nie masz pewnej informacji na ten temat, zamiast zgadywać.'} "
-        f"Kontekst rozmowy: {history}"
+        "You are a helpful assistant on a Vintage Story game server. "
+        "Rules: "
+        "1. Always reply in Polish, naturally and in a friendly way. "
+        "2. Give the concrete answer first, concisely, at most 4 sentences. "
+        "3. Base your answer PRIMARILY on the 'Wiki knowledge' below - it is hard data from this game; "
+        "if it contains numbers or recipes, give EXACTLY those values, not your own. "
+        "4. Vintage Story is NOT Minecraft - it has its own, different mechanics. Do not carry over "
+        "recipes, ratios, names or rules from other games. "
+        "5. If the knowledge below does not contain the answer, say plainly that you do not have "
+        "reliable information - do NOT guess numbers, recipes or names from memory. "
+        "6. No asterisks, stage directions or pathos. "
+        "7. At the end you may add the command [CMD: time] or [CMD: weather] when it fits. "
+        f"Wiki knowledge: {knowledge or NO_KNOWLEDGE} "
+        f"Conversation context: {history}"
     )
 
-    full_prompt = f"{system_context}\nGracz {player}: {prompt}\nOdpowiedź:"
+    full_prompt = f"{system_context}\nPlayer {player}: {prompt}\nAnswer:"
 
     try:
         t_gen = time.time()
         ai_reply = generate_text(full_prompt, temperature=0.1, timeout=90)
-        print(f"--> [CZAS] generowanie odpowiedzi: {time.time()-t_gen:.1f}s")
+        print(f"--> [TIME] answer generation: {time.time()-t_gen:.1f}s")
 
-        clean_reply = re.sub(r'\[CMD:\s*.*?\]', '', ai_reply).strip()
-        if clean_reply:
-            player_memory[player].append(f"AI: {clean_reply}")
-            if len(player_memory[player]) > 5:
-                player_memory[player].pop(0)
-
+        clean_reply = CMD_PATTERN.sub('', ai_reply).strip()
+        if use_memory and clean_reply:
+            remember(player, prompt, clean_reply)
         return ai_reply
     except Exception as e:
         print(f"--> [AI ERROR]: {e}")
         return ""
 
-def is_on_cooldown(event_key):
-    """Zwraca True jeśli zdarzenie jest na cooldownie (za wcześnie by reagować)."""
-    last = event_cooldowns.get(event_key, 0)
-    if time.time() - last < EVENT_COOLDOWN_SEC:
-        return True
-    event_cooldowns[event_key] = time.time()
-    return False
+
+def is_on_cooldown(key, seconds=EVENT_COOLDOWN_SEC):
+    """Return True if this key fired too recently; otherwise record it and return False."""
+    now = time.time()
+    with cooldown_lock:
+        if now - cooldowns.get(key, 0) < seconds:
+            return True
+        cooldowns[key] = now
+        return False
+
+
+def handle_chat(player, question):
+    ai_response = ask_ai(player, question)
+    if ai_response:
+        send_to_game(ai_response)
+
 
 def react_to_event(event_type, context):
-    """Generuje i wysyła przyjazną reakcję asystenta na zdarzenie w świecie."""
+    """Generate and send a friendly assistant reaction to a world event."""
     prompts = {
-        "join": f"Gracz {context} właśnie dołączył do serwera. Przywitaj go krótko, ciepło i przyjaźnie. Max 1-2 zdania.",
-        "leave": f"Gracz {context} właśnie opuścił serwer. Pożegnaj go krótko i miło. Max 1 zdanie.",
-        "death": f"Zdarzenie: {context}. Skomentuj to ze współczuciem i dodaj jedną krótką, praktyczną radę na przyszłość. Max 2 zdania.",
-        "storm_start": "Nadchodzi burza temporalna. Ostrzeż graczy krótko i rzeczowo, przypomnij, żeby się schronili. Max 2 zdania.",
-        "storm_end": "Burza temporalna właśnie minęła. Poinformuj krótko, że jest już bezpiecznie. Max 1 zdanie.",
-        "entity_kill": f"Zdarzenie: {context}. Skomentuj krótko i pozytywnie, np. pochwal gracza. Max 1 zdanie.",
-        "world_event": f"Zdarzenie w świecie gry: {context}. Skomentuj je krótko i rzeczowo. Max 1-2 zdania.",
+        "join": f"Player {context} just joined the server. Greet them briefly, warmly and in a friendly way. Max 1-2 sentences.",
+        "leave": f"Player {context} just left the server. Say goodbye briefly and nicely. Max 1 sentence.",
+        "death": f"Event: {context}. Comment on it with sympathy and add one short, practical tip for the future. Max 2 sentences.",
+        "storm_start": "A temporal storm is coming. Warn the players briefly and to the point, remind them to take shelter. Max 2 sentences.",
+        "storm_end": "The temporal storm has just passed. Say briefly that it is safe again. Max 1 sentence.",
+        "entity_kill": f"Event: {context}. Comment briefly and positively, e.g. praise the player. Max 1 sentence.",
+        "world_event": f"World event: {context}. Comment on it briefly and to the point. Max 1-2 sentences.",
     }
 
-    prompt = prompts.get(event_type, f"Zdarzenie: {context}. Skomentuj krótko i przyjaźnie. Max 1 zdanie.")
-    print(f"[EVENT] Reaguję na: {event_type} | {context}")
+    prompt = prompts.get(event_type, f"Event: {context}. Comment briefly and in a friendly way. Max 1 sentence.")
+    print(f"[EVENT] Reacting to: {event_type} | {context}")
 
     full_prompt = (
-        "Jesteś pomocnym, przyjaznym asystentem na serwerze Vintage Story. "
-        "Odpowiadaj TYLKO po polsku, krótko i rzeczowo. "
-        "Zero gwiazdek, didaskaliów, nawiasów i patosu.\n"
-        f"{prompt}\nOdpowiedź:"
+        "You are a helpful, friendly assistant on a Vintage Story server. "
+        "Reply ONLY in Polish, briefly and to the point. "
+        "No asterisks, stage directions, brackets or pathos.\n"
+        f"{prompt}\nAnswer:"
     )
     try:
         ai_reply = generate_text(full_prompt, temperature=0.7, timeout=90)
@@ -373,102 +434,107 @@ def react_to_event(event_type, context):
     except Exception as e:
         print(f"--> [EVENT AI ERROR]: {e}")
 
+
 def autonomous_loop():
     while True:
         time.sleep(random.randint(300, 900))
-        prompt = ("Napisz jedną krótką, przyjazną wskazówkę dla graczy Vintage Story "
-                  "(ciekawostka o craftingu, przetrwaniu albo mechanice gry). Max 1-2 zdania.")
-        ai_response = ask_ai("SYSTEM", prompt)
+        prompt = ("Write one short, friendly tip for Vintage Story players "
+                  "(a fact about crafting, survival or a game mechanic). Max 1-2 sentences.")
+        ai_response = ask_ai("SYSTEM", prompt, use_memory=False)
         if ai_response:
             send_to_game(ai_response)
 
-def main():
-    autonomy_thread = threading.Thread(target=autonomous_loop, daemon=True)
-    autonomy_thread.start()
 
-    # Bez sudo — user musi być w grupie 'docker' (wymagane też przez usługę systemd).
+def handle_line(line, submit):
+    """Classify a log line and hand the work to `submit(fn, *args)` (the thread pool)."""
+    # --- Player chat ---
+    match = chat_pattern.search(line)
+    if match:
+        player, msg = match.group(1).strip(), match.group(2).strip()
+        if player in BOT_NAMES:
+            return
+        question = extract_question(msg)
+        if not question or check_toxicity(question):
+            return
+        if is_on_cooldown(f"chat_{player}", CHAT_COOLDOWN_SEC):
+            print(f"[CHAT] {player}: skipped (cooldown {CHAT_COOLDOWN_SEC}s)")
+            return
+        print(f"[CHAT] {player}: {question}")
+        submit(handle_chat, player, question)
+        return
+
+    # --- Player joins ---
+    match = join_pattern.search(line)
+    if match:
+        player = match.group(1).strip()
+        if not is_on_cooldown(f"join_{player}"):
+            submit(react_to_event, "join", player)
+        return
+
+    # --- Player leaves ---
+    match = leave_pattern.search(line)
+    if match:
+        player = match.group(1).strip()
+        if not is_on_cooldown(f"leave_{player}"):
+            submit(react_to_event, "leave", player)
+        return
+
+    # --- Player death (EventLogger mod) ---
+    match = player_death_pattern.search(line)
+    if match:
+        player, cause = match.group(1).strip(), match.group(2).strip()
+        print(f"[EVENT] Player death: {player} by {cause}")
+        if not is_on_cooldown(f"player_death_{player}"):
+            submit(react_to_event, "death", f"{player} was killed by: {cause}")
+        return
+
+    # --- Player killed a creature (EventLogger mod) ---
+    match = entity_kill_pattern.search(line)
+    if match:
+        player, entity = match.group(1).strip(), match.group(2).strip()
+        print(f"[EVENT] Kill: {player} -> {entity}")
+        if not is_on_cooldown(f"kill_{player}"):
+            submit(react_to_event, "entity_kill", f"{player} killed: {entity}")
+        return
+
+    # --- World events ("Message to all") ---
+    match = msg_all_pattern.search(line)
+    if match:
+        world_msg = match.group(1).strip()
+        if world_msg.startswith("AI:"):  # the bot's own announcements
+            return
+        msg_lower = world_msg.lower()
+        if "temporal storm" in msg_lower and "approach" in msg_lower:
+            if not is_on_cooldown("storm_start"):
+                submit(react_to_event, "storm_start", world_msg)
+        elif "temporal storm" in msg_lower and ("wan" in msg_lower or "pass" in msg_lower or "over" in msg_lower):
+            if not is_on_cooldown("storm_end"):
+                submit(react_to_event, "storm_end", world_msg)
+        # add other world events here
+
+
+def main():
+    if not RCON_PASSWORD:
+        raise SystemExit("VS_RCON_PASSWORD is not set — add it to .env (see .env.example)")
+    print(f"[*] Generation: {('Gemini ' + GEMINI_MODEL) if USE_GEMINI else ('Ollama ' + MAIN_MODEL)}"
+          f"{' (fallback: Ollama)' if USE_GEMINI and OLLAMA_FALLBACK else ''}"
+          f" | Embeddings: local Ollama ({EMBED_HOST})")
+    init_knowledge_base()
+
+    threading.Thread(target=autonomous_loop, daemon=True).start()
+    # Questions and reactions run in a thread pool — the log loop never waits for the LLM.
+    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai")
+
+    # No sudo — the user must be in the 'docker' group (the systemd service needs that too).
     log_cmd = ["docker", "logs", "--tail", "0", "-f", CONTAINER_NAME]
     process = subprocess.Popen(log_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
-    print("[*] Bot uruchomiony. Nasłuchiwanie logów...")
+    print("[*] Bot started. Listening to logs...")
 
     for line in iter(process.stdout.readline, ''):
-        flush_rcon_queue()   # wyślij zaległe (np. reakcje na zdarzenia) — w głównym wątku
         line = line.strip()
-        if not line:
-            continue
+        if line:
+            handle_line(line, pool.submit)
 
-        # --- Chat gracza ---
-        match = chat_pattern.search(line)
-        if match:
-            player, msg = match.group(1).strip(), match.group(2).strip()
-            if player in ["AI", "SYSTEM"] or not msg.startswith("AI "):
-                continue
-
-            clean_msg = msg[3:].strip()
-            if check_toxicity(clean_msg):
-                continue
-
-            print(f"[CHAT] {player}: {clean_msg}")
-            ai_response = ask_ai(player, clean_msg)
-            if ai_response:
-                send_to_game(ai_response)
-                flush_rcon_queue()   # od razu na czat (główny wątek -> brak błędu signal)
-            continue
-
-        # --- Gracz dołącza ---
-        match = join_pattern.search(line)
-        if match:
-            player = match.group(1).strip()
-            if not is_on_cooldown(f"join_{player}"):
-                threading.Thread(target=react_to_event, args=("join", player), daemon=True).start()
-            continue
-
-        # --- Gracz wychodzi ---
-        match = leave_pattern.search(line)
-        if match:
-            player = match.group(1).strip()
-            if not is_on_cooldown(f"leave_{player}"):
-                threading.Thread(target=react_to_event, args=("leave", player), daemon=True).start()
-            continue
-
-        # --- Śmierć gracza (EventLogger mod) ---
-        match = player_death_pattern.search(line)
-        if match:
-            player, cause = match.group(1).strip(), match.group(2).strip()
-            print(f"[EVENT] Śmierć gracza: {player} przez {cause}")
-            if not is_on_cooldown(f"player_death_{player}"):
-                ctx = f"{player} zginął od: {cause}"
-                threading.Thread(target=react_to_event, args=("death", ctx), daemon=True).start()
-            continue
-
-        # --- Gracz zabił stwora (EventLogger mod) ---
-        match = entity_kill_pattern.search(line)
-        if match:
-            player, entity = match.group(1).strip(), match.group(2).strip()
-            print(f"[EVENT] Kill: {player} -> {entity}")
-            if not is_on_cooldown(f"kill_{player}"):
-                ctx = f"{player} zabił: {entity}"
-                threading.Thread(target=react_to_event, args=("entity_kill", ctx), daemon=True).start()
-            continue
-
-        # --- World events ("Message to all") ---
-        match = msg_all_pattern.search(line)
-        if match:
-            world_msg = match.group(1).strip()
-            # Ignoruj własne wiadomości AI
-            if world_msg.startswith("AI:"):
-                continue
-
-            msg_lower = world_msg.lower()
-
-            if "temporal storm" in msg_lower and "approach" in msg_lower:
-                if not is_on_cooldown("storm_start"):
-                    threading.Thread(target=react_to_event, args=("storm_start", world_msg), daemon=True).start()
-            elif "temporal storm" in msg_lower and ("wan" in msg_lower or "pass" in msg_lower or "over" in msg_lower):
-                if not is_on_cooldown("storm_end"):
-                    threading.Thread(target=react_to_event, args=("storm_end", world_msg), daemon=True).start()
-            # inne world eventy możesz dodać tutaj
 
 if __name__ == "__main__":
     main()
