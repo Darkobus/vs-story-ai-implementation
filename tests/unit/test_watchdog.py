@@ -1,30 +1,44 @@
 import pytest
 
-
-def _drain(wd):
-    items = []
-    while not wd.rcon_queue.empty():
-        items.append(wd.rcon_queue.get_nowait())
-    return items
-
+# --- [CMD: ...] parsing ---
 
 def test_whitelisted_command_is_extracted(watchdog):
-    _drain(watchdog)
-    watchdog.send_to_game('Sprawdź sam. [CMD: time]')
-    assert _drain(watchdog) == [("Sprawdź sam.", ["time"])]
+    assert watchdog.parse_reply("Sprawdź sam. [CMD: time]") == ("Sprawdź sam.", ["time"])
 
 
 @pytest.mark.parametrize("cmd", ["op Kacper", "time set day; op Kacper", "weatherX", "stop"])
 def test_other_commands_are_dropped(watchdog, cmd):
-    _drain(watchdog)
-    watchdog.send_to_game(f"Hej [CMD: {cmd}]")
-    assert _drain(watchdog) == [("Hej", [])]
+    assert watchdog.parse_reply(f"Hej [CMD: {cmd}]") == ("Hej", [])
 
 
 def test_quotes_and_newlines_are_stripped(watchdog):
-    _drain(watchdog)
-    watchdog.send_to_game('Linia 1\n"Linia 2"')
-    assert _drain(watchdog) == [("Linia 1 Linia 2", [])]
+    assert watchdog.parse_reply('Linia 1\n"Linia 2"') == ("Linia 1 Linia 2", [])
+
+
+def test_send_to_game_announces_and_runs_commands(watchdog, monkeypatch):
+    sent = []
+    monkeypatch.setattr(watchdog.rcon, "run", lambda *cmds: sent.append(cmds))
+    watchdog.send_to_game("Jest noc. [CMD: time]")
+    watchdog.send_to_game("[CMD: op Kacper]")  # nothing left to send
+    assert sent == [("announce AI: Jest noc.", "time")]
+
+
+# --- trigger / filters ---
+
+@pytest.mark.parametrize(
+    "msg, question",
+    [
+        ("AI jak zrobić kilof?", "jak zrobić kilof?"),
+        ("ai: gdzie miedź", "gdzie miedź"),
+        ("@AI, co to burza", "co to burza"),
+        ("Ai   pomocy", "pomocy"),
+        ("aim jest słaby", None),
+        ("AI", None),
+        ("hej AI jak", None),
+    ],
+)
+def test_extract_question(watchdog, msg, question):
+    assert watchdog.extract_question(msg) == question
 
 
 def test_toxicity_filter(watchdog):
@@ -45,3 +59,70 @@ def test_toxicity_filter(watchdog):
 def test_log_patterns(watchdog, pattern, line, groups):
     m = getattr(watchdog, pattern).search(line)
     assert m and m.groups() == groups
+
+
+# --- dispatch + cooldowns ---
+
+def test_chat_line_is_dispatched_with_player_cooldown(watchdog):
+    watchdog.cooldowns.clear()
+    calls = []
+    submit = lambda fn, *args: calls.append((fn.__name__, args))  # noqa: E731
+    line = "12:01 [Server Chat] 0 | Ola: AI jak zrobić kilof?"
+    watchdog.handle_line(line, submit)
+    watchdog.handle_line(line, submit)  # same player within CHAT_COOLDOWN_SEC -> dropped
+    watchdog.handle_line("12:01 [Server Chat] 0 | Ola: zwykła rozmowa", submit)
+    watchdog.handle_line("12:01 [Server Chat] 0 | AI: AI pętla", submit)
+    assert calls == [("handle_chat", ("Ola", "jak zrobić kilof?"))]
+
+
+def test_join_event_is_dispatched(watchdog):
+    watchdog.cooldowns.clear()
+    calls = []
+    watchdog.handle_line("[Server Event] Ola [::ffff:1.2.3.4] joins.", lambda fn, *a: calls.append((fn.__name__, a)))
+    assert calls == [("react_to_event", ("join", "Ola"))]
+
+
+# --- conversation memory ---
+
+def test_memory_keeps_questions_and_answers(watchdog, monkeypatch):
+    watchdog.player_memory.clear()
+    prompts = []
+    monkeypatch.setattr(watchdog, "fetch_game_knowledge", lambda q: "")
+    monkeypatch.setattr(
+        watchdog, "generate_text",
+        lambda prompt, **kw: prompts.append(prompt) or f"odp {len(prompts)} [CMD: time]",
+    )
+    for i in range(1, 5):
+        watchdog.ask_ai("Ola", f"pytanie {i}")
+
+    assert watchdog.player_memory["Ola"] == [
+        ("pytanie 2", "odp 2"), ("pytanie 3", "odp 3"), ("pytanie 4", "odp 4"),
+    ]
+    assert "Player: pytanie 1 / AI: odp 1" in prompts[1]  # previous exchange reaches the model
+
+
+def test_autonomous_prompt_skips_memory(watchdog, monkeypatch):
+    watchdog.player_memory.clear()
+    monkeypatch.setattr(watchdog, "fetch_game_knowledge", lambda q: "")
+    monkeypatch.setattr(watchdog, "generate_text", lambda prompt, **kw: "wskazówka")
+    watchdog.ask_ai("SYSTEM", "napisz wskazówkę", use_memory=False)
+    assert "SYSTEM" not in watchdog.player_memory
+
+
+# --- Gemini response handling ---
+
+def test_gemini_text_is_extracted(watchdog):
+    result = {"candidates": [{"content": {"parts": [{"text": " Cześć "}, {"text": "!"}]}}]}
+    assert watchdog.parse_gemini_response(result) == "Cześć !"
+
+
+@pytest.mark.parametrize(
+    "result, reason",
+    [
+        ({"promptFeedback": {"blockReason": "SAFETY"}}, "SAFETY"),
+        ({"candidates": [{"finishReason": "MAX_TOKENS", "content": {}}]}, "MAX_TOKENS"),
+    ],
+)
+def test_gemini_empty_response_raises_with_reason(watchdog, result, reason):
+    with pytest.raises(watchdog.GenerationError, match=reason):
+        watchdog.parse_gemini_response(result)

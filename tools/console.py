@@ -2,8 +2,8 @@ import os
 import sys
 from pathlib import Path
 
-from mcrcon import MCRcon
-
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bot"))
+from rcon import RconClient  # noqa: E402  (bot/rcon.py — same client the bot uses)
 
 
 def _load_env():
@@ -22,20 +22,24 @@ def main():
     port = int(os.environ.get("VS_RCON_PORT", "42421"))
     password = os.environ.get("VS_RCON_PASSWORD")
     if not password:
-        sys.exit("Brak VS_RCON_PASSWORD — ustaw go w .env (patrz .env.example)")
+        sys.exit("VS_RCON_PASSWORD is not set — add it to .env (see .env.example)")
 
+    client = RconClient(host, password=password, port=port, timeout=10)
     try:
-        with MCRcon(host, password, port=port, timeout=10) as mcr:
-            print("Connected to RCON. Type 'exit' to quit.")
-            while True:
-                cmd = input("VS> ")
-                if cmd.lower() in ['exit', 'quit']:
-                    break
-                if cmd.strip():
-                    response = mcr.command(cmd)
-                    print(response)
+        client.run()  # check connection and password
     except Exception as e:
-        print(f"Connection failed: {e}")
+        sys.exit(f"Connection failed: {e}")
+
+    print("Connected to RCON. Type 'exit' to quit.")
+    while True:
+        cmd = input("VS> ")
+        if cmd.lower() in ("exit", "quit"):
+            break
+        if cmd.strip():
+            try:
+                print(client.run(cmd)[0])
+            except Exception as e:
+                print(f"RCON error: {e}")
 
 
 if __name__ == "__main__":

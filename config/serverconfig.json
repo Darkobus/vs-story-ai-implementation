@@ -379,7 +379,7 @@
   "DieAboveMemoryUsageMb": 50000,
   "RconServer": {
     "Enabled": true,
-    "Port": 42420,
+    "Port": 42421,
     "Password": "CHANGE_ME",
     "MaxClients": 5
   }
