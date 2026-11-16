@@ -91,7 +91,8 @@
             <tbody>
                 <tr><td><code>ask_ai()</code> → <code>system_context</code></td><td>Answers to players' questions</td></tr>
                 <tr><td><code>react_to_event()</code> → the <code>prompts</code> dict + its system line</td><td>Greetings, goodbyes, deaths, storms, kills</td></tr>
-                <tr><td><code>autonomous_loop()</code></td><td>The periodic gameplay tip</td></tr>
+                <tr><td><code>TIP_PROMPT</code> (used by <code>post_tip()</code>)</td><td>The periodic gameplay tip</td></tr>
+                <tr><td><code>HELP_TEXT</code>, <code>JOIN_HINT</code></td><td>Fixed Polish texts — sent as they are, no model involved</td></tr>
             </tbody>
         </table>
         <div class="box info">
@@ -151,8 +152,9 @@
 <span class="string">"You are a helpful, friendly assistant on a Vintage Story server. "</span>
 <span class="string">"Reply ONLY in Polish, briefly and to the point. No asterisks, stage directions, brackets or pathos."</span></code></pre>
         <div class="box warn">
-            The periodic message is now a <em>useful</em> gameplay tip instead of a dark one-liner, but it still fires every
-            5–15 minutes and there is no switch to turn individual reactions off. That is on the <a href="07-roadmap.html#spam">roadmap</a>.
+            The periodic message is a <em>useful</em> gameplay tip built from real game data instead of a dark one-liner, and it comes
+            every 30–60 minutes. Each kind of reaction can be switched off in <code>.env</code> (<code>EVENT_REACTIONS</code>); deaths and
+            kills are off by default (see <a href="04-bot.html#events">Bot</a>).
         </div>
     </section>
 
@@ -175,18 +177,23 @@
                 <tr>
                     <td>a player joins</td>
                     <td><em>“Another soul wanders my lands…”</em></td>
-                    <td><em>“Hi Jan, good to see you on the server! Have a good game.”</em></td>
+                    <td><em>“Hi Jan, good to see you on the server! Write ‘AI pomoc’ to see how to talk to me.”</em></td>
                 </tr>
                 <tr>
                     <td>a question the knowledge base can't answer</td>
                     <td><em>A confident, made-up recipe.</em></td>
                     <td><em>“I don't have reliable information on that — the wiki is the safest place to check.”</em></td>
                 </tr>
+                <tr>
+                    <td>an answer from the knowledge base</td>
+                    <td><em>No way to tell where it came from.</em></td>
+                    <td><em>“Tin bronze is 8–12% tin and 88–92% copper… (source: wiki “Bronze”)”</em></td>
+                </tr>
             </tbody>
         </table>
         <div class="box tip">
-            Telling players how to call the bot when they join would be a small detail that helps a lot — today the greeting does not
-            mention it; the <a href="07-roadmap.html#trigger">roadmap</a> adds a fixed hint.
+            The second half of the join greeting is fixed text, not generated: telling every player how to call the bot is too
+            important to leave to the model. It is sent even when the model call fails.
         </div>
     </section>
 

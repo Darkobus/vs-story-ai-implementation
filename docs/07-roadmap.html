@@ -24,8 +24,8 @@
     <div class="eyebrow">Part 07 · Roadmap</div>
     <h1>Improvements — so players actually use it</h1>
     <p class="sub">Concrete improvements ordered by <strong>impact / effort</strong>, with what is already done.
-    The biggest quality gains (threshold, multilingual embeddings, cosine) are in; the open items are mostly about players
-    finding and trusting the bot.</p>
+    The quality fixes (threshold, multilingual embeddings, cosine) and the player-facing ones (help, citations, quieter events)
+    are in; what is left is mostly better retrieval and housekeeping.</p>
 </header>
 
 <main>
@@ -37,11 +37,11 @@
             <tbody>
                 <tr><td>1</td><td><a href="#threshold">Relevance threshold + “I don't know”</a></td><td>huge</td><td>small</td><td><span class="pill green">done</span> calibrate</td></tr>
                 <tr><td>2</td><td><a href="#multilingual">Multilingual embeddings (no translation)</a></td><td>large</td><td>medium</td><td><span class="pill green">done</span></td></tr>
-                <tr><td>3</td><td><a href="#trigger">A clear trigger + help</a></td><td>large</td><td>small</td><td><span class="pill amber">partly</span></td></tr>
+                <tr><td>3</td><td><a href="#trigger">A clear trigger + help</a></td><td>large</td><td>small</td><td><span class="pill green">done</span></td></tr>
                 <tr><td>4</td><td><a href="#cosine">Cosine metric</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span></td></tr>
                 <tr><td>5</td><td><a href="#hybrid">Hybrid search + reranking</a></td><td>large</td><td>larger</td><td><span class="pill">open</span></td></tr>
-                <tr><td>6</td><td><a href="#citations">Citing sources</a></td><td>medium</td><td>small</td><td><span class="pill">open</span></td></tr>
-                <tr><td>7</td><td><a href="#spam">Less spam (optional events)</a></td><td>medium</td><td>small</td><td><span class="pill">open</span></td></tr>
+                <tr><td>6</td><td><a href="#citations">Citing sources</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span></td></tr>
+                <tr><td>7</td><td><a href="#spam">Less spam (optional events)</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span></td></tr>
                 <tr><td>8</td><td><a href="#security">Security (secrets, rate limit)</a></td><td>medium</td><td>small</td><td><span class="pill green">done</span> mostly</td></tr>
                 <tr><td>9</td><td><a href="#memory">Persistent per-player memory</a></td><td>medium</td><td>medium</td><td><span class="pill">open</span></td></tr>
                 <tr><td>10</td><td><a href="#structure">Code structure, tests, CI</a></td><td>medium</td><td>medium</td><td><span class="pill amber">partly</span></td></tr>
@@ -83,16 +83,13 @@ relevant = [h <span class="keyword">for</span> h <span class="keyword">in</span>
     </section>
 
     <section id="trigger">
-        <h2><span class="num">3</span> A clear trigger + help <span class="pill amber">partly</span></h2>
-        <p>
-            <strong>Done:</strong> the trigger is case-insensitive and accepts <code>AI …</code>, <code>ai: …</code>, <code>ai, …</code>
-            and <code>@ai …</code> (see <a href="04-bot.html#trigger">Bot</a>).
-        </p>
-        <p><strong>Open:</strong></p>
+        <h2><span class="num">3</span> A clear trigger + help <span class="pill green">done</span></h2>
         <ul>
-            <li>An <code>AI help</code> command that answers with a fixed, short explanation and two or three example questions — without calling the LLM.</li>
-            <li>A guaranteed one-line hint on how to ask, appended to the join greeting (today the greeting does not mention it).</li>
+            <li>The trigger is case-insensitive and accepts <code>AI …</code>, <code>ai: …</code>, <code>ai, …</code> and <code>@ai …</code>.</li>
+            <li><code>AI pomoc</code> / <code>AI help</code> / <code>AI ?</code> answers with a fixed explanation and two example questions — no LLM call.</li>
+            <li>Every join greeting ends with a fixed hint: <em>“Napisz „AI pomoc”, żeby zobaczyć, jak ze mną rozmawiać.”</em> (<code>JOIN_HINT</code>).</li>
         </ul>
+        <p>Details: <a href="04-bot.html#trigger">Bot</a>.</p>
         <div class="box info">
             Long term, the cleanest trigger is an in-game <code>/ai</code> command added by a server mod (like <code>EventLogger</code>).
             Bigger project, worth keeping in mind.
@@ -134,28 +131,33 @@ relevant = [h <span class="keyword">for</span> h <span class="keyword">in</span>
     </section>
 
     <section id="citations">
-        <h2><span class="num">6</span> Citing sources <span class="pill">open</span></h2>
+        <h2><span class="num">6</span> Citing sources <span class="pill green">done</span></h2>
         <p>
-            Every chunk already has a <code>source</code> (<code>wiki/Bronze</code>,
-            <code>game_asset/recipe_alloy/tinbronze.json</code>), and wiki chunks a <code>url</code>. The bot already gets them from
-            <code>kb.search</code> and logs them. Next step: append a short source to the answer, so players can check it and trust it.
+            Answers grounded in the knowledge base end with up to two sources, so players can check them:
+            <code>(źródło: wiki „Bronze”)</code> or <code>(źródła: wiki „Bronze”, dane gry „tinbronze”)</code>.
+            Nothing is cited when no chunk passed the threshold. <code>CITE_SOURCES=0</code> turns it off.
         </p>
-        <pre><code>sources = sorted({h.source <span class="keyword">for</span> h <span class="keyword">in</span> relevant})
-<span class="comment"># e.g. append to the answer: "(source: wiki/Bronze)"</span></code></pre>
+        <div class="box info">
+            Possible follow-up: wiki chunks also carry a <code>url</code>. Chat cannot show links nicely, but a <code>AI źródło</code>
+            command could print the full URL of the last answer's source.
+        </div>
     </section>
 
     <section id="spam">
-        <h2><span class="num">7</span> Less spam (optional events) <span class="pill">open</span></h2>
-        <p>
-            A comment on every death and a message every 5–15 minutes can be annoying (see <a href="04-bot.html#events">Bot</a>).
-            The periodic message is already a useful tip rather than a dark one-liner; what is missing is control:
-        </p>
-        <pre><code><span class="comment"># proposed .env switches</span>
-REACT_TO_DEATHS=0        <span class="comment"># off by default</span>
-REACT_TO_JOINS=1
+        <h2><span class="num">7</span> Less spam (optional events) <span class="pill green">done</span></h2>
+        <p>Every kind of message is now under control in <code>.env</code>:</p>
+        <pre><code>EVENT_REACTIONS=join,leave,storm   <span class="comment"># also: death, kill; or "all" / "none"</span>
 TIPS_ENABLED=1
-TIPS_MIN_SEC=1800        <span class="comment"># 30–60 min instead of 5–15</span>
-TIPS_MAX_SEC=3600</code></pre>
+TIPS_MIN_MINUTES=30                <span class="comment"># was every 5–15 minutes</span>
+TIPS_MAX_MINUTES=60</code></pre>
+        <p>
+            Deaths and kills are off by default. Tips are now built from a random knowledge-base chunk, so they are grounded in
+            real data (see <a href="04-bot.html#events">Bot</a>).
+        </p>
+        <div class="box info">
+            Possible follow-up: skip tips while nobody is online. The bot only sees joins and leaves since it started, so this needs
+            the player list from the server (RCON) rather than counting events.
+        </div>
     </section>
 
     <section id="security">
@@ -224,9 +226,10 @@ TIPS_MAX_SEC=3600</code></pre>
         <h2><span class="num">→</span> Suggested next steps</h2>
         <ol>
             <li><strong>Rebuild and calibrate</strong> — ingest into the new collection on the server, then tune <code>RAG_MAX_DISTANCE</code> (#1).</li>
-            <li><strong>Help command + join hint</strong> (#3) — players start using the bot at all.</li>
-            <li><strong>Citations</strong> (#6) and <strong>event switches</strong> (#7) — small, and they build trust and cut noise.</li>
-            <li><strong>Hybrid search + reranking</strong> (#5) — the next big jump in answer quality.</li>
+            <li><strong>Watch real usage</strong> — read the bot's log for a week: which questions get “I don't know”, which sources
+                get cited, whether tips get skipped a lot.</li>
+            <li><strong>Hybrid search + reranking</strong> (#5) — the next big jump in answer quality, especially for exact item names.</li>
+            <li><strong>Split <code>watchdog.py</code></strong> (#10) and <strong>mod assets</strong> (#11) — when they start to matter.</li>
         </ol>
     </section>
 

@@ -60,6 +60,20 @@ def test_reset_empties_collection(tmp_path, collection):
     assert kb.open_collection(reset=True, path=tmp_path, model="fake").count() == 0
 
 
+def test_random_chunk(collection):
+    assert kb.random_chunk(collection) is None  # empty collection
+    kb.add_documents(collection, ["a", "b"], ["Bronze alloy", "Steel making"],
+                     [{"source": "wiki/Bronze"}, {"source": "wiki/Steel"}])
+
+    class PickLast:
+        def randrange(self, n):
+            return n - 1
+
+    hit = kb.random_chunk(collection, rng=PickLast())
+    assert hit is not None and hit.text in ("Bronze alloy", "Steel making")
+    assert hit.source in ("wiki/Bronze", "wiki/Steel")
+
+
 def test_legacy_l2_collection_is_refused():
     with pytest.raises(kb.KnowledgeBaseError, match="'l2' distance"):
         kb.check_compatible({"embed_model": "m"}, "m")

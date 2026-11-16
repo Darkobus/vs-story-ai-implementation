@@ -87,7 +87,7 @@ def test_join_event_is_dispatched(watchdog):
 def test_memory_keeps_questions_and_answers(watchdog, monkeypatch):
     watchdog.player_memory.clear()
     prompts = []
-    monkeypatch.setattr(watchdog, "fetch_game_knowledge", lambda q: "")
+    monkeypatch.setattr(watchdog, "fetch_game_knowledge", lambda q: [])
     monkeypatch.setattr(
         watchdog, "generate_text",
         lambda prompt, **kw: prompts.append(prompt) or f"odp {len(prompts)} [CMD: time]",
@@ -99,14 +99,6 @@ def test_memory_keeps_questions_and_answers(watchdog, monkeypatch):
         ("pytanie 2", "odp 2"), ("pytanie 3", "odp 3"), ("pytanie 4", "odp 4"),
     ]
     assert "Player: pytanie 1 / AI: odp 1" in prompts[1]  # previous exchange reaches the model
-
-
-def test_autonomous_prompt_skips_memory(watchdog, monkeypatch):
-    watchdog.player_memory.clear()
-    monkeypatch.setattr(watchdog, "fetch_game_knowledge", lambda q: "")
-    monkeypatch.setattr(watchdog, "generate_text", lambda prompt, **kw: "wskazówka")
-    watchdog.ask_ai("SYSTEM", "napisz wskazówkę", use_memory=False)
-    assert "SYSTEM" not in watchdog.player_memory
 
 
 # --- Gemini response handling ---
@@ -147,7 +139,7 @@ def test_knowledge_uses_polish_query_without_translation(watchdog, monkeypatch):
     monkeypatch.setattr(watchdog, "RAG_MAX_DISTANCE", 0.5)
     monkeypatch.setattr(watchdog, "generate_text", lambda *a, **kw: pytest.fail("no LLM call expected"))
     monkeypatch.setattr(watchdog.kb, "search", lambda col, q, n_results: queries.append(q) or _hits())
-    assert watchdog.fetch_game_knowledge("jak zrobić brąz") == "Bronze: copper 88-92%, tin 8-12%"
+    assert [h.text for h in watchdog.fetch_game_knowledge("jak zrobić brąz")] == ["Bronze: copper 88-92%, tin 8-12%"]
     assert queries == ["jak zrobić brąz"]
 
 
@@ -156,7 +148,7 @@ def test_knowledge_is_empty_when_db_errors(watchdog, monkeypatch):
         raise RuntimeError("ollama down")
     monkeypatch.setattr(watchdog, "wiki_collection", object())
     monkeypatch.setattr(watchdog.kb, "search", boom)
-    assert watchdog.fetch_game_knowledge("cokolwiek") == ""
+    assert watchdog.fetch_game_knowledge("cokolwiek") == []
 
 
 # --- log stream ---

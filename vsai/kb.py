@@ -8,6 +8,7 @@ would be incomparable (or a different dimension).
 chromadb is imported lazily so the bot's unit tests can import this module without it.
 """
 
+import random
 from dataclasses import dataclass
 
 from vsai import config
@@ -93,6 +94,19 @@ def add_documents(collection, ids: list[str], texts: list[str], metadatas: list[
                           metadatas=metadatas[batch], embeddings=vectors)
         stored += len(texts[batch])
     return stored, failed
+
+
+def random_chunk(collection, rng=random) -> Hit | None:
+    """One chunk picked uniformly at random (distance 0.0), or None if the collection is empty."""
+    count = collection.count()
+    if not count:
+        return None
+    result = collection.get(limit=1, offset=rng.randrange(count), include=["documents", "metadatas"])
+    docs = result.get("documents") or []
+    if not docs or not docs[0]:
+        return None
+    metas = result.get("metadatas") or [{}]
+    return Hit(docs[0], 0.0, metas[0] or {})
 
 
 def search(collection, query: str, n_results: int = 5, model: str | None = None) -> list[Hit]:
