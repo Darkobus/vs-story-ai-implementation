@@ -151,7 +151,7 @@ full_prompt = f<span class="string">"{system_context}\nPlayer {player}: {prompt}
             <thead><tr><th>Task</th><th>Temperature</th><th>Why</th></tr></thead>
             <tbody>
                 <tr><td>Answering questions (RAG)</td><td><code>0.1</code></td><td>Facts, not fantasy — stick to the knowledge base</td></tr>
-                <tr><td>Gameplay tips (autonomous loop)</td><td><code>0.1</code></td><td>They go through the same <code>ask_ai()</code> path, grounded in the knowledge base</td></tr>
+                <tr><td>Gameplay tips</td><td><code>0.3</code></td><td>Rephrasing one knowledge-base chunk: some freedom of wording, but the facts come from the chunk</td></tr>
                 <tr><td>Reactions to events</td><td><code>0.7</code></td><td>Variety, so greetings and storm warnings do not repeat word for word</td></tr>
             </tbody>
         </table>

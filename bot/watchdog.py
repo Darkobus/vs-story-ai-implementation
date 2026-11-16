@@ -53,6 +53,34 @@ EVENT_COOLDOWN_SEC = 30   # minimum gap between reactions to the same event type
 # minimum gap between questions from one player (spam and Gemini cost protection)
 CHAT_COOLDOWN_SEC = int(os.environ.get("CHAT_COOLDOWN_SEC", "10"))
 
+
+def _env_flag(name, default):
+    return os.environ.get(name, "1" if default else "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# --- Player-facing behaviour (all switchable in .env) ---
+# Which world events the bot comments on. Deaths and kills are off by default: a comment on
+# every death or every killed creature quickly turns into spam.
+EVENT_TYPES = {"join", "leave", "death", "kill", "storm"}
+_reactions = os.environ.get("EVENT_REACTIONS", "join,leave,storm").strip().lower()
+EVENT_REACTIONS = (set() if _reactions in ("", "none", "off")
+                   else EVENT_TYPES if _reactions == "all"
+                   else {r.strip() for r in _reactions.split(",") if r.strip()})
+# Periodic gameplay tips, built from a random knowledge-base chunk.
+TIPS_ENABLED = _env_flag("TIPS_ENABLED", True)
+TIPS_MIN_MINUTES = int(os.environ.get("TIPS_MIN_MINUTES", "30"))
+TIPS_MAX_MINUTES = max(int(os.environ.get("TIPS_MAX_MINUTES", "60")), TIPS_MIN_MINUTES)
+CITE_SOURCES = _env_flag("CITE_SOURCES", True)   # append "(źródło: ...)" to grounded answers
+JOIN_HINT_ENABLED = _env_flag("JOIN_HINT", True)  # add a fixed "how to ask" line to join greetings
+
+# In-game texts are Polish (the players' language); everything else stays English.
+HELP_WORDS = {"help", "pomoc", "pomocy"}  # "AI help", "AI pomoc", and "AI ?" show HELP_TEXT
+# No <...> in chat texts: Vintage Story renders chat as VTML (HTML-like) markup.
+HELP_TEXT = ("Jestem asystentem serwera. Zapytaj mnie na czacie, zaczynając wiadomość od „AI”, "
+             "np. „AI jak zrobić brąz cynowy?” albo „AI gdzie znaleźć miedź?”. "
+             "Odpowiadam na podstawie wiki i plików gry. Mogę też sprawdzić czas i pogodę.")
+JOIN_HINT = "Napisz „AI pomoc”, żeby zobaczyć, jak ze mną rozmawiać."
+
 wiki_collection = None    # set by init_knowledge_base()
 rcon = RconClient(config.RCON_HOST, config.RCON_PORT, RCON_PASSWORD)
 
@@ -179,12 +207,12 @@ def translate_query_for_rag(prompt):
 def fetch_game_knowledge(prompt):
     """Search the vector DB with a RELEVANCE THRESHOLD.
 
-    Returns only chunks closer than RAG_MAX_DISTANCE. If none is relevant enough it
-    returns "" and the prompt tells the model to admit it does not know, instead of
+    Returns only the hits closer than RAG_MAX_DISTANCE. If none is relevant enough it
+    returns [] and the prompt tells the model to admit it does not know, instead of
     making things up from unrelated chunks.
     """
     if not wiki_collection:
-        return ""
+        return []
     try:
         t0 = time.time()
         query = prompt
@@ -196,11 +224,11 @@ def fetch_game_knowledge(prompt):
         print(f"--> [TIME] translation: {t1-t0:.1f}s | embed+search: {time.time()-t1:.1f}s")
     except Exception as e:
         print(f"--> [VECTOR DB ERROR]: {e}")
-        return ""
+        return []
 
     if not hits:
         print("--> [RAG] No results from the DB.")
-        return ""
+        return []
     # Log every distance — they are what you tune RAG_MAX_DISTANCE with
     print(f"--> [RAG] Distances: {[(round(h.distance, 3), h.source) for h in hits]} "
           f"(threshold={RAG_MAX_DISTANCE})")
@@ -209,10 +237,9 @@ def fetch_game_knowledge(prompt):
     if not relevant:
         print(f"--> [RAG] No relevant chunks (best distance={hits[0].distance:.3f}, "
               f"threshold={RAG_MAX_DISTANCE}). The model will be told not to guess.")
-        return ""
-    knowledge = "\n".join(h.text for h in relevant)
-    print(f"--> [RAG] Accepted {len(relevant)}/{len(hits)} chunks:\n{knowledge[:200]}\n")
-    return knowledge
+        return []
+    print(f"--> [RAG] Accepted {len(relevant)}/{len(hits)} chunks:\n{relevant[0].text[:200]}\n")
+    return relevant
 
 
 def select_relevant(hits, threshold=None):
@@ -220,6 +247,29 @@ def select_relevant(hits, threshold=None):
     if threshold is None:
         return list(hits)
     return [h for h in hits if h.distance < threshold]
+
+
+def source_label(source):
+    """'wiki/Bronze' -> 'wiki „Bronze”'; 'game_asset/recipe_alloy/x/tinbronze.json' -> 'dane gry „tinbronze”'."""
+    if source.startswith("wiki/"):
+        return f"wiki „{source[len('wiki/'):]}”"
+    if source.startswith("game_asset/"):
+        name = source.rsplit("/", 1)[-1]
+        return f"dane gry „{name.rsplit('.', 1)[0]}”"
+    return ""
+
+
+def format_sources(hits, limit=2):
+    """A short Polish citation for the chat, e.g. '(źródło: wiki „Bronze”)'. '' if nothing to cite."""
+    labels = []
+    for hit in hits:
+        label = source_label(hit.source)
+        if label and label not in labels:
+            labels.append(label)
+    if not labels:
+        return ""
+    word = "źródło" if len(labels[:limit]) == 1 else "źródła"
+    return f"({word}: {', '.join(labels[:limit])})"
 
 
 # --- Server log line patterns ---
@@ -239,6 +289,11 @@ def check_toxicity(message):
     return any(word in msg_lower for word in FORBIDDEN_WORDS)
 
 
+def is_help_request(question):
+    words = question.lower().strip(" !.?")
+    return words in HELP_WORDS or not words  # "AI ?" -> only punctuation
+
+
 def extract_question(message):
     """Return the question if the message addresses the bot ("AI ...", "ai: ...", "@ai ..."), else None."""
     match = TRIGGER_PATTERN.match(message.strip())
@@ -255,7 +310,7 @@ def parse_reply(message):
         # only an exact whitelisted command, no arguments (the LLM cannot append anything)
         if cmd in ALLOWED_COMMANDS:
             commands.append(cmd)
-    clean_msg = CMD_PATTERN.sub('', clean_msg).strip()
+    clean_msg = re.sub(r"\s{2,}", " ", CMD_PATTERN.sub('', clean_msg)).strip()
     return clean_msg, commands
 
 
@@ -289,9 +344,12 @@ NO_KNOWLEDGE = ("No matching knowledge in the database - tell the player plainly
                 "do not have reliable information on this, instead of guessing.")
 
 
-def ask_ai(player, prompt, use_memory=True):
-    knowledge = fetch_game_knowledge(prompt)
-    history = format_history(player) if use_memory else ""
+def ask_ai(player, prompt):
+    """Answer a player's question. Returns the model's reply (may contain [CMD: ...]),
+    followed by a source citation when the answer is grounded in the knowledge base."""
+    hits = fetch_game_knowledge(prompt)
+    knowledge = "\n".join(h.text for h in hits)
+    history = format_history(player)
 
     system_context = (
         "You are a helpful assistant on a Vintage Story game server. "
@@ -318,9 +376,10 @@ def ask_ai(player, prompt, use_memory=True):
         print(f"--> [TIME] answer generation: {time.time()-t_gen:.1f}s")
 
         clean_reply = CMD_PATTERN.sub('', ai_reply).strip()
-        if use_memory and clean_reply:
-            remember(player, prompt, clean_reply)
-        return ai_reply
+        if clean_reply:
+            remember(player, prompt, clean_reply)  # memory without the citation
+        citation = format_sources(hits) if CITE_SOURCES and ai_reply else ""
+        return f"{ai_reply} {citation}".strip()
     except Exception as e:
         print(f"--> [AI ERROR]: {e}")
         return ""
@@ -363,22 +422,52 @@ def react_to_event(event_type, context):
         "No asterisks, stage directions, brackets or pathos.\n"
         f"{prompt}\nAnswer:"
     )
+    ai_reply = ""
     try:
         ai_reply = generate_text(full_prompt, temperature=0.7, timeout=90)
-        if ai_reply:
-            send_to_game(ai_reply)
     except Exception as e:
         print(f"--> [EVENT AI ERROR]: {e}")
+    if event_type == "join" and JOIN_HINT_ENABLED:
+        ai_reply = f"{ai_reply} {JOIN_HINT}".strip()  # sent even if the LLM failed
+    if ai_reply:
+        send_to_game(ai_reply)
 
 
-def autonomous_loop():
+TIP_PROMPT = (
+    "You are a helpful assistant on a Vintage Story server. Below is one piece of data from "
+    "the game files or the wiki. If it contains something useful for players, turn it into ONE "
+    "short, friendly tip in Polish (max 2 sentences), using exactly the facts given and nothing "
+    "that is not in the data. If it is not useful as a tip (too technical, just a list of codes, "
+    "unclear), reply with only the word SKIP.\n"
+    "Data: {data}\nTip:"
+)
+
+
+def post_tip():
+    """Post one gameplay tip built from a random knowledge-base chunk, so it is grounded in
+    real game data (a generic "write a tip" question would rarely pass the RAG threshold)."""
+    if not wiki_collection:
+        return
+    try:
+        hit = kb.random_chunk(wiki_collection)
+        if hit is None:
+            return
+        tip = generate_text(TIP_PROMPT.format(data=hit.text), temperature=0.3, timeout=90)
+    except Exception as e:
+        print(f"--> [TIP ERROR]: {e}")
+        return
+    tip = CMD_PATTERN.sub('', tip).strip()
+    if not tip or "SKIP" in tip.upper():
+        print(f"[TIP] Skipped chunk from {hit.source}")
+        return
+    citation = format_sources([hit]) if CITE_SOURCES else ""
+    send_to_game(f"{tip} {citation}".strip())
+
+
+def tips_loop():
     while True:
-        time.sleep(random.randint(300, 900))
-        prompt = ("Write one short, friendly tip for Vintage Story players "
-                  "(a fact about crafting, survival or a game mechanic). Max 1-2 sentences.")
-        ai_response = ask_ai("SYSTEM", prompt, use_memory=False)
-        if ai_response:
-            send_to_game(ai_response)
+        time.sleep(random.randint(TIPS_MIN_MINUTES * 60, TIPS_MAX_MINUTES * 60))
+        post_tip()
 
 
 def handle_line(line, submit):
@@ -396,14 +485,17 @@ def handle_line(line, submit):
             print(f"[CHAT] {player}: skipped (cooldown {CHAT_COOLDOWN_SEC}s)")
             return
         print(f"[CHAT] {player}: {question}")
-        submit(handle_chat, player, question)
+        if is_help_request(question):
+            submit(send_to_game, HELP_TEXT)  # fixed text, no LLM call
+        else:
+            submit(handle_chat, player, question)
         return
 
     # --- Player joins ---
     match = join_pattern.search(line)
     if match:
         player = match.group(1).strip()
-        if not is_on_cooldown(f"join_{player}"):
+        if "join" in EVENT_REACTIONS and not is_on_cooldown(f"join_{player}"):
             submit(react_to_event, "join", player)
         return
 
@@ -411,7 +503,7 @@ def handle_line(line, submit):
     match = leave_pattern.search(line)
     if match:
         player = match.group(1).strip()
-        if not is_on_cooldown(f"leave_{player}"):
+        if "leave" in EVENT_REACTIONS and not is_on_cooldown(f"leave_{player}"):
             submit(react_to_event, "leave", player)
         return
 
@@ -420,7 +512,7 @@ def handle_line(line, submit):
     if match:
         player, cause = match.group(1).strip(), match.group(2).strip()
         print(f"[EVENT] Player death: {player} by {cause}")
-        if not is_on_cooldown(f"player_death_{player}"):
+        if "death" in EVENT_REACTIONS and not is_on_cooldown(f"player_death_{player}"):
             submit(react_to_event, "death", f"{player} was killed by: {cause}")
         return
 
@@ -429,7 +521,7 @@ def handle_line(line, submit):
     if match:
         player, entity = match.group(1).strip(), match.group(2).strip()
         print(f"[EVENT] Kill: {player} -> {entity}")
-        if not is_on_cooldown(f"kill_{player}"):
+        if "kill" in EVENT_REACTIONS and not is_on_cooldown(f"kill_{player}"):
             submit(react_to_event, "entity_kill", f"{player} killed: {entity}")
         return
 
@@ -437,7 +529,7 @@ def handle_line(line, submit):
     match = msg_all_pattern.search(line)
     if match:
         world_msg = match.group(1).strip()
-        if world_msg.startswith("AI:"):  # the bot's own announcements
+        if world_msg.startswith("AI:") or "storm" not in EVENT_REACTIONS:  # own announcements / switched off
             return
         msg_lower = world_msg.lower()
         if "temporal storm" in msg_lower and "approach" in msg_lower:
@@ -456,9 +548,16 @@ def main():
           f"{' (fallback: Ollama)' if USE_GEMINI and OLLAMA_FALLBACK else ''}"
           f" | Embeddings: {config.EMBED_MODEL} @ {config.EMBED_HOST}"
           f" | RAG threshold: {RAG_MAX_DISTANCE}{', translate' if RAG_TRANSLATE else ''}")
+    unknown = EVENT_REACTIONS - EVENT_TYPES
+    if unknown:
+        print(f"[*] WARNING: unknown EVENT_REACTIONS {sorted(unknown)} (valid: {sorted(EVENT_TYPES)})")
+    print(f"[*] Event reactions: {', '.join(sorted(EVENT_REACTIONS & EVENT_TYPES)) or 'none'}"
+          f" | Tips: {f'every {TIPS_MIN_MINUTES}-{TIPS_MAX_MINUTES} min' if TIPS_ENABLED else 'off'}"
+          f" | Citations: {'on' if CITE_SOURCES else 'off'}")
     init_knowledge_base()
 
-    threading.Thread(target=autonomous_loop, daemon=True).start()
+    if TIPS_ENABLED:
+        threading.Thread(target=tips_loop, daemon=True).start()
     # Questions and reactions run in a thread pool — the log loop never waits for the LLM.
     pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai")
     print("[*] Bot started. Listening to logs...")

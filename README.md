@@ -31,7 +31,12 @@ Runs 24/7 on a small home server as a systemd service.
   translation call. If nothing passes the relevance threshold, the bot says it doesn't know
   instead of guessing (this fixed "Minecraft-style" hallucinations).
 - Remembers the last few question/answer pairs per player.
-- Posts a short gameplay tip every 5–15 minutes; event reactions have per-type cooldowns.
+- Cites its sources: grounded answers end with e.g. `(źródło: wiki „Bronze”)`.
+- `AI pomoc` / `AI help` prints a fixed how-to-ask message (no LLM call); join greetings
+  end with a one-line hint pointing to it.
+- Posts a gameplay tip every 30–60 minutes, built from a random knowledge-base chunk.
+- Event reactions are switchable (`EVENT_REACTIONS`, default: joins, leaves, storms;
+  deaths and kills are off) and have per-event cooldowns.
 
 **Shared code (`vsai/`)** — settings from `.env`, Ollama embeddings, knowledge-base access
 (the collection records which embedding model built it and refuses a mismatched one),
@@ -63,6 +68,9 @@ All commands run from the repository root. Production: `deploy/vsbot.service`
 
 Requires: Docker container running the Vintage Story server with RCON enabled, Ollama with
 `bge-m3` for embeddings, and either a Gemini API key or a local Ollama model for generation.
+
+Player-facing behaviour (event reactions, tips, citations, the join hint) is set in `.env`;
+see the bottom of `.env.example`.
 
 ### Building the knowledge base on another machine
 

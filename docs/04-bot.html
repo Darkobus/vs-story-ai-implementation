@@ -78,9 +78,11 @@
 <span class="keyword">def</span> <span class="func">extract_question</span>(message):
     match = TRIGGER_PATTERN.match(message.strip())
     <span class="keyword">return</span> match.group(<span class="number">1</span>).strip() <span class="keyword">if</span> match <span class="keyword">else</span> <span class="keyword">None</span>   <span class="comment"># None = not for the bot</span></code></pre>
-        <div class="box warn">
-            <strong>Players still have to know about it.</strong> Nothing in the game tells them the bot exists or how to address it.
-            A help command and a short hint on join are on the <a href="07-roadmap.html#trigger">roadmap</a>.
+        <div class="box info">
+            <strong>Players have to know about it.</strong> So <code>AI pomoc</code>, <code>AI help</code> or <code>AI ?</code>
+            answers with a fixed how-to-ask message (no LLM call), and every join greeting ends with
+            <em>“Napisz „AI pomoc”, żeby zobaczyć, jak ze mną rozmawiać.”</em> (<code>JOIN_HINT=0</code> turns that off).
+            A question that merely contains the word, like <code>AI pomoc przy budowie pieca</code>, is still a normal question.
         </div>
         <p>There is also a simple <strong>toxicity filter</strong> — questions containing banned words are ignored. The list is Polish
         on purpose, because the players' chat is:</p>
@@ -91,9 +93,10 @@
     <section id="pipeline">
         <h2><span class="num">3</span> From question to answer</h2>
         <p>Once a question passes the filters, <code>ask_ai()</code> runs — this is where RAG meets the LLM:</p>
-        <pre><code><span class="keyword">def</span> <span class="func">ask_ai</span>(player, prompt, use_memory=<span class="keyword">True</span>):
-    knowledge = fetch_game_knowledge(prompt)                  <span class="comment"># 1. RAG with a relevance threshold</span>
-    history = format_history(player) <span class="keyword">if</span> use_memory <span class="keyword">else</span> <span class="string">""</span>   <span class="comment"># 2. the last 3 Q&amp;A pairs</span>
+        <pre><code><span class="keyword">def</span> <span class="func">ask_ai</span>(player, prompt):
+    hits = fetch_game_knowledge(prompt)                       <span class="comment"># 1. RAG with a relevance threshold</span>
+    knowledge = <span class="string">"\n"</span>.join(h.text <span class="keyword">for</span> h <span class="keyword">in</span> hits)
+    history = format_history(player)                          <span class="comment"># 2. the last 3 Q&amp;A pairs</span>
 
     system_context = (
         <span class="string">"You are a helpful assistant on a Vintage Story game server. Rules: ..."</span>  <span class="comment"># 3. role + rules</span>
@@ -103,17 +106,19 @@
     ai_reply = generate_text(f<span class="string">"{system_context}\nPlayer {player}: {prompt}\nAnswer:"</span>,
                              temperature=<span class="number">0.1</span>)                <span class="comment"># 4. Gemini or Ollama</span>
     remember(player, prompt, ai_reply_without_commands)        <span class="comment"># 5. remember the exchange</span>
-    <span class="keyword">return</span> ai_reply</code></pre>
+    <span class="keyword">return</span> f<span class="string">"{ai_reply} {format_sources(hits)}"</span>            <span class="comment"># 6. cite: "(źródło: wiki „Bronze”)"</span></code></pre>
         <p>The knowledge lookup searches with the player's own words — the multilingual embedding model matches Polish questions
         to English chunks directly — and keeps only the chunks that are close enough:</p>
         <pre><code><span class="keyword">def</span> <span class="func">fetch_game_knowledge</span>(prompt):
     hits = kb.search(wiki_collection, prompt, n_results=<span class="number">5</span>)
     relevant = [h <span class="keyword">for</span> h <span class="keyword">in</span> hits <span class="keyword">if</span> h.distance &lt; RAG_MAX_DISTANCE]   <span class="comment"># default 0.5</span>
-    <span class="keyword">return</span> <span class="string">"\n"</span>.join(h.text <span class="keyword">for</span> h <span class="keyword">in</span> relevant)   <span class="comment"># "" → the prompt says: admit you don't know</span></code></pre>
+    <span class="keyword">return</span> relevant   <span class="comment"># [] → the prompt says: admit you don't know</span></code></pre>
         <div class="box info">
             Every lookup logs the distances and sources, e.g.
             <code>[RAG] Distances: [(0.31, 'game_asset/recipe_alloy/tinbronze.json'), ...]</code> — that is what you tune
-            <code>RAG_MAX_DISTANCE</code> with. Conversation memory lives <strong>in RAM</strong>: it is lost on restart and is per player.
+            <code>RAG_MAX_DISTANCE</code> with. The same sources are cited to the player: wiki pages by title, game files by name
+            (<code>dane gry „tinbronze”</code>), at most two. <code>CITE_SOURCES=0</code> turns that off. The citation is not stored
+            in conversation memory, which lives <strong>in RAM</strong>: it is lost on restart and is per player.
         </div>
     </section>
 
@@ -185,18 +190,27 @@
         <h2><span class="num">7</span> Reacting to world events</h2>
         <p>
             Besides chat, the bot reacts to events it spots in the log: a player joining or leaving, a temporal storm starting or ending,
-            and — thanks to the <code>EventLogger</code> mod — a player dying or killing a creature. A separate
-            <strong>autonomous loop</strong> posts a short gameplay tip every 5–15 minutes.
+            and — thanks to the <code>EventLogger</code> mod — a player dying or killing a creature. Which of these the bot comments on
+            is set by <code>EVENT_REACTIONS</code> (default <code>join,leave,storm</code>; deaths and kills are off, because a comment on
+            every one of them quickly becomes spam).
         </p>
         <pre><code>join_pattern         = re.compile(<span class="string">r"\[Server Event\] (.+?) \[.+\] joins\."</span>)
 player_death_pattern = re.compile(<span class="string">r"\[Server Event\] \[WATCHDOG\] PLAYER_DEATH (.+?) by (.+)"</span>)  <span class="comment"># from the mod</span>
 
 match = join_pattern.search(line)
-<span class="keyword">if</span> match <span class="keyword">and</span> <span class="keyword">not</span> is_on_cooldown(f<span class="string">"join_{player}"</span>):
+<span class="keyword">if</span> match <span class="keyword">and</span> <span class="string">"join"</span> <span class="keyword">in</span> EVENT_REACTIONS <span class="keyword">and</span> <span class="keyword">not</span> is_on_cooldown(f<span class="string">"join_{player}"</span>):
     submit(react_to_event, <span class="string">"join"</span>, player)</code></pre>
-        <div class="box warn">
-            <strong>This can get tiring for players.</strong> A comment on every death and a tip every few minutes is a lot.
-            Making each kind of reaction optional (an env switch) and the tips rarer is on the <a href="07-roadmap.html#spam">roadmap</a>.
+        <h4>Gameplay tips</h4>
+        <p>
+            Every 30–60 minutes (<code>TIPS_MIN_MINUTES</code>/<code>TIPS_MAX_MINUTES</code>; <code>TIPS_ENABLED=0</code> turns them off)
+            the bot picks a <strong>random chunk</strong> from the knowledge base and asks the model to turn it into one short tip — or to answer
+            <code>SKIP</code> if the chunk is not tip material (a list of block codes, say). The tip is cited like an answer.
+        </p>
+        <div class="box info">
+            <strong>Why not just ask the model for “a tip”?</strong> That is what the bot used to do, through the normal question path.
+            With the relevance threshold, a generic “write a tip” query matches nothing closely, so the model would be told it has no
+            reliable information — or, without the threshold, it would invent a tip from memory. Starting from a real chunk keeps tips
+            grounded and varied.
         </div>
     </section>
 

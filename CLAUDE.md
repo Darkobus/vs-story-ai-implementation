@@ -53,4 +53,6 @@ archive/   retired code (fine-tuning experiment) — not maintained, excluded fr
 - RCON: `vsai/rcon.py` (socket timeouts, lock) — safe from any thread. Don't reintroduce
   `mcrcon`; its signal-based timeout only works in the main thread.
 - `[CMD: ...]` from the LLM runs only if it exactly equals a whitelisted command.
+- Player-facing fixed texts (`HELP_TEXT`, `JOIN_HINT`, citation labels) are Polish constants in
+  `bot/watchdog.py`. Behaviour switches live in `.env`: `EVENT_REACTIONS`, `TIPS_*`, `CITE_SOURCES`, `JOIN_HINT`.
 - Ingest IDs include the asset's relative path; re-ingesting replaces a source's chunks.
