@@ -1,127 +1,147 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ingest danych · VS AI Asystent</title>
+<title>Data ingest · VS AI Assistant</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 
 <nav class="topnav">
-    <span class="brand">VS AI · Dokumentacja</span>
-    <a href="index.html">Start</a>
-    <a href="01-architektura.html">Architektura</a>
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html">Home</a>
+    <a href="01-architecture.html">Architecture</a>
     <a href="02-rag.html">RAG</a>
     <a href="03-ingest.html" class="active">Ingest</a>
     <a href="04-bot.html">Bot</a>
     <a href="05-llm.html">LLM</a>
-    <a href="06-asystent.html">Asystent</a>
-    <a href="07-ulepszenia.html">Ulepszenia</a>
+    <a href="06-persona.html">Persona</a>
+    <a href="07-roadmap.html">Roadmap</a>
 </nav>
 
 <header class="page">
-    <div class="eyebrow">Część 03 · Budowa wiedzy</div>
-    <h1>Ingest danych do bazy</h1>
-    <p class="sub">Jak surowe pliki gry i strony wiki zamieniają się w przeszukiwalną wiedzę w ChromaDB.
-    To „faza A" z <a href="01-architektura.html">architektury</a> — uruchamiana raz, gdy chcesz nakarmić bota.</p>
+    <div class="eyebrow">Part 03 · Building the knowledge</div>
+    <h1>Loading data into the knowledge base</h1>
+    <p class="sub">How raw game files and wiki pages become searchable knowledge in ChromaDB.
+    This is “phase A” from the <a href="01-architecture.html">architecture</a> — run when you want to feed the bot.</p>
 </header>
 
 <main>
 
     <div class="toc">
-        <strong>Na tej stronie</strong>
+        <strong>On this page</strong>
         <ol>
-            <li><a href="#po-co">Po co to robimy</a></li>
-            <li><a href="#dwa-zrodla">Dwa źródła: pliki gry i wiki</a></li>
-            <li><a href="#potok">Potok ingestu krok po kroku</a></li>
-            <li><a href="#json5">Pułapka: niestandardowy JSON5</a></li>
-            <li><a href="#tekst">Dlaczego zamieniamy JSON na zdania</a></li>
-            <li><a href="#upsert">Upsert vs add — bez duplikatów</a></li>
-            <li><a href="#alternatywy">Alternatywy</a></li>
+            <li><a href="#why">Why we do this</a></li>
+            <li><a href="#sources">Two sources: game files and the wiki</a></li>
+            <li><a href="#pipeline">The ingest pipeline, step by step</a></li>
+            <li><a href="#json5">A trap: non-standard JSON5</a></li>
+            <li><a href="#text">Why we turn JSON into sentences</a></li>
+            <li><a href="#wiki">Cleaning wiki pages</a></li>
+            <li><a href="#reingest">Re-ingesting without duplicates</a></li>
+            <li><a href="#run">Running it</a></li>
+            <li><a href="#alternatives">Alternatives</a></li>
         </ol>
     </div>
 
-    <section id="po-co">
-        <h2><span class="num">1</span> Po co to robimy</h2>
+    <section id="why">
+        <h2><span class="num">1</span> Why we do this</h2>
         <p class="lead">
-            Bot jest mądry tylko na tyle, na ile mądra jest jego baza. Ingest to proces <strong>napełniania bazy wektorowej</strong>
-            wiedzą o grze: recepturami, przedmiotami, blokami, stronami wiki. Bez tego kroku <code>query()</code> nie ma czego zwracać.
+            The bot is only as smart as its database. Ingest is the process of <strong>filling the vector database</strong>
+            with game knowledge: recipes, items, blocks and wiki pages. Without it, <code>query()</code> has nothing to return.
         </p>
         <div class="box info">
-            Ingest uruchamiasz <strong>ręcznie i rzadko</strong> — np. po aktualizacji gry albo dodaniu moda.
-            W codziennej pracy bota ten kod w ogóle się nie wykonuje.
+            You run ingest <strong>by hand and rarely</strong> — after a game update, for example.
+            While the bot is running, this code is not used at all.
         </div>
     </section>
 
-    <section id="dwa-zrodla">
-        <h2><span class="num">2</span> Dwa źródła wiedzy</h2>
+    <section id="sources">
+        <h2><span class="num">2</span> Two sources of knowledge</h2>
         <div class="grid cols-2">
             <div class="card">
                 <span class="k">ingest/game_assets.py</span>
-                <h3>Pliki gry (JSON)</h3>
-                <p>Czyta definicje z wnętrza kontenera Dockera (przez <code>docker exec</code>): receptury stopów, craftingu,
-                kucia, gotowania, beczek + przedmioty i bloki. To „twarde dane" gameplay'owe — dokładne proporcje, dropy, trwałość.</p>
+                <h3>Game files (JSON)</h3>
+                <p>Reads the definitions either from inside the game's Docker container (<code>docker exec … tar</code>) or from a
+                local copy of the assets (<code>--assets-dir</code>). Alloy, crafting, smithing, cooking and barrel recipes,
+                plus items and blocks. This is the hard gameplay data — exact ratios, drops, durability.</p>
             </div>
             <div class="card">
                 <span class="k">ingest/wiki.py</span>
-                <h3>Strony wiki (tekst)</h3>
-                <p>Czyta pliki tekstowe wiki, czyści składnię MediaWiki (linki <code>[[...]]</code>, szablony <code>{{...}}</code>,
-                pogrubienia). To „wiedza opisowa": mechaniki, poradniki, lore.</p>
+                <h3>Wiki pages (text)</h3>
+                <p>Downloads pages from the official wiki through the MediaWiki API — a curated list by default, or the whole wiki
+                with <code>--all</code> (<code>--en</code> keeps English pages only). Cleans the markup. This is the descriptive
+                knowledge: mechanics, guides, lore.</p>
             </div>
         </div>
-        <p>Oba wrzucają dane do <strong>tej samej kolekcji</strong> <code>vintage_story_wiki</code>, więc bot przeszukuje je razem.</p>
+        <p>Both write to <strong>the same collection</strong>, <code>vintage_story_kb</code>, so the bot searches them together.</p>
+
+        <h4>Where the game files live</h4>
+        <p>In the <code>vs-ai-server</code> container the assets are under <code>/game/assets/survival/</code>
+        (approximate vanilla file counts):</p>
+        <table>
+            <thead><tr><th>Path (relative to <code>/game/assets</code>)</th><th>Contents</th><th>Files</th></tr></thead>
+            <tbody>
+                <tr><td><code>survival/itemtypes/</code></td><td>Items (tools, food, resources, armour)</td><td>~280</td></tr>
+                <tr><td><code>survival/blocktypes/</code></td><td>Blocks (material, hardness, drops, variants)</td><td>~500</td></tr>
+                <tr><td><code>survival/recipes/alloy/</code></td><td>Metal alloy ratios</td><td>~9</td></tr>
+                <tr><td><code>survival/recipes/grid/</code></td><td>Crafting grid recipes</td><td>~250</td></tr>
+                <tr><td><code>survival/recipes/smithing/</code></td><td>Smithing patterns and allowed metals</td><td>~34</td></tr>
+                <tr><td><code>survival/recipes/cooking/</code></td><td>Cooking recipes</td><td>~14</td></tr>
+                <tr><td><code>survival/recipes/barrel/</code></td><td>Barrel recipes (soaking, fermenting)</td><td>~40</td></tr>
+            </tbody>
+        </table>
     </section>
 
-    <section id="potok">
-        <h2><span class="num">3</span> Potok ingestu krok po kroku</h2>
+    <section id="pipeline">
+        <h2><span class="num">3</span> The ingest pipeline, step by step</h2>
         <div class="flow">
-            <div class="flow-step">odczyt<br>pliku</div>
+            <div class="flow-step">read<br>the file</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">parsowanie<br>(JSON5 / wiki)</div>
+            <div class="flow-step">parse<br>(JSON5 / wiki)</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">czyszczenie<br>(usuń śmieci)</div>
+            <div class="flow-step">clean<br>(drop noise)</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">JSON → zdania<br>(konwerter)</div>
+            <div class="flow-step">JSON → sentences<br>(converter)</div>
             <div class="flow-arrow">→</div>
             <div class="flow-step">chunking</div>
             <div class="flow-arrow">→</div>
             <div class="flow-step">embedding<br>+ upsert</div>
         </div>
-        <p>Przykład: jeden plik receptury stopu przechodzi przez cały potok i ląduje w bazie jako czytelne zdanie:</p>
-        <pre><code><span class="comment"># wejście — tinbronze.json (surowy plik gry, składnia JSON5)</span>
+        <p>For example, one alloy recipe file goes through the whole pipeline and ends up in the database as a readable sentence:</p>
+        <pre><code><span class="comment"># input — tinbronze.json (raw game file, JSON5 syntax)</span>
 { ingredients: [
     { code: <span class="string">"ingot-tin"</span>,    minratio: <span class="number">0.08</span>, maxratio: <span class="number">0.12</span> },
     { code: <span class="string">"ingot-copper"</span>, minratio: <span class="number">0.88</span>, maxratio: <span class="number">0.92</span> },
   ], output: { code: <span class="string">"ingot-tinbronze"</span> } }
 
-<span class="comment"># wyjście — tekst zapisany do bazy</span>
+<span class="comment"># output — the text stored in the database</span>
 Alloy recipe: tinbronze
 Ingredients: ingot-tin 8-12%, ingot-copper 88-92%
 Output: ingot-tinbronze</code></pre>
     </section>
 
     <section id="json5">
-        <h2><span class="num">4</span> Pułapka: niestandardowy JSON5</h2>
+        <h2><span class="num">4</span> A trap: non-standard JSON5</h2>
         <p>
-            Pliki Vintage Story <strong>nie są poprawnym JSON</strong> — używają składni JSON5: klucze bez cudzysłowów i przecinki
-            na końcu list. Zwykłe <code>json.loads()</code> rzuca błędem. Dlatego projekt używa biblioteki <code>pyjson5</code>:
+            Vintage Story files are <strong>not valid JSON</strong> — they use JSON5 syntax: unquoted keys and trailing commas.
+            Plain <code>json.loads()</code> fails on them. That is why the project uses <code>pyjson5</code>:
         </p>
         <pre><code><span class="keyword">import</span> pyjson5
 
 <span class="keyword">def</span> <span class="func">parse_vs_json</span>(raw: str):
     <span class="keyword">try</span>:
-        <span class="keyword">return</span> pyjson5.loads(raw)   <span class="comment"># radzi sobie z JSON5</span>
+        <span class="keyword">return</span> pyjson5.loads(raw)   <span class="comment"># handles JSON5</span>
     <span class="keyword">except</span> Exception:
-        <span class="keyword">return</span> None             <span class="comment"># uszkodzony plik → pomiń</span></code></pre>
+        <span class="keyword">return</span> None             <span class="comment"># broken file → skip it and count an error</span></code></pre>
 
-        <h4>Czyszczenie danych wizualnych</h4>
+        <h4>Stripping visual data</h4>
         <p>
-            Definicje przedmiotów zawierają mnóstwo danych renderowania (kształty 3D, tekstury, animacje, transformacje),
-            które są bezużyteczne dla AI i tylko zaśmiecają wektory. Usuwamy je po kluczach przed konwersją:
+            Item and block definitions are full of rendering data (3D shapes, textures, animations, transforms) that means nothing
+            to the AI and only pollutes the vectors. It is removed by key before conversion:
         </p>
         <pre><code>VISUAL_KEYS = {<span class="string">"shape"</span>, <span class="string">"textures"</span>, <span class="string">"sounds"</span>, <span class="string">"guiTransform"</span>,
-               <span class="string">"collisionBoxes"</span>, <span class="string">"selectionBoxes"</span>, ...}  <span class="comment"># ~40 kluczy</span>
+               <span class="string">"collisionBoxes"</span>, <span class="string">"selectionBoxes"</span>, ...}  <span class="comment"># ~45 keys</span>
 
 <span class="keyword">def</span> <span class="func">strip_visual</span>(obj):
     <span class="keyword">if</span> isinstance(obj, dict):
@@ -132,89 +152,112 @@ Output: ingot-tinbronze</code></pre>
     <span class="keyword">return</span> obj</code></pre>
     </section>
 
-    <section id="tekst">
-        <h2><span class="num">5</span> Dlaczego zamieniamy JSON na zdania</h2>
+    <section id="text">
+        <h2><span class="num">5</span> Why we turn JSON into sentences</h2>
         <p>
-            Model embeddingowy był trenowany na <strong>naturalnym języku</strong>, nie na nawiasach klamrowych. Opisowy tekst
-            <code>"Alloy recipe: tinbronze, Ingredients: ingot-tin 8-12%..."</code> daje znacznie lepszy wektor semantyczny niż
-            surowy JSON. Dlatego dla każdego typu pliku jest osobny <strong>konwerter</strong>:
+            The embedding model was trained on <strong>natural language</strong>, not curly braces. Descriptive text like
+            <code>"Alloy recipe: tinbronze, Ingredients: ingot-tin 8-12%..."</code> gives a much better semantic vector than raw JSON.
+            So each file type has its own <strong>converter</strong>:
         </p>
         <table>
-            <thead><tr><th>Konwerter</th><th>Typ pliku</th><th>Co wyciąga</th></tr></thead>
+            <thead><tr><th>Converter</th><th>File type</th><th>What it extracts</th></tr></thead>
             <tbody>
-                <tr><td><code>convert_alloy</code></td><td>receptury stopów</td><td>składniki + proporcje %, wynik</td></tr>
-                <tr><td><code>convert_grid</code></td><td>crafting</td><td>wzór gridowy, składniki, ilość wyniku</td></tr>
-                <tr><td><code>convert_smithing</code></td><td>kucie</td><td>składnik, dozwolone metale, wynik</td></tr>
-                <tr><td><code>convert_cooking</code></td><td>gotowanie</td><td>składniki, ilości, co powstaje</td></tr>
-                <tr><td><code>convert_item</code></td><td>przedmioty</td><td>typ narzędzia, trwałość, warianty, obrażenia, odżywianie</td></tr>
-                <tr><td><code>convert_block</code></td><td>bloki</td><td>materiał, twardość, dropy, zachowania</td></tr>
+                <tr><td><code>convert_alloy</code></td><td>alloy recipes</td><td>ingredients + ratio ranges (rounded %), output</td></tr>
+                <tr><td><code>convert_grid</code></td><td>crafting</td><td>grid pattern, ingredients, output quantity</td></tr>
+                <tr><td><code>convert_smithing</code></td><td>smithing</td><td>ingredient, allowed metals, output</td></tr>
+                <tr><td><code>convert_cooking</code></td><td>cooking</td><td>ingredients, quantities, result</td></tr>
+                <tr><td><code>convert_barrel</code></td><td>barrel recipes</td><td>ingredients, output, duration</td></tr>
+                <tr><td><code>convert_item</code></td><td>items</td><td>tool type, durability (per variant), variants, damage, nutrition</td></tr>
+                <tr><td><code>convert_block</code></td><td>blocks</td><td>material, resistance (per variant), drops, behaviours</td></tr>
             </tbody>
         </table>
         <div class="box tip">
-            <strong>Zasada uniwersalna RAG:</strong> jakość bazy = jakość tekstu, który do niej wkładasz.
-            „Garbage in, garbage out". Dobre, opisowe chunki to 80% sukcesu RAG-u — ważniejsze niż wybór bazy czy modelu.
+            <strong>The universal rule of RAG:</strong> the quality of the database is the quality of the text you put in.
+            Garbage in, garbage out. Good, descriptive chunks matter more than the choice of database or model.
         </div>
     </section>
 
-    <section id="upsert">
-        <h2><span class="num">6</span> Upsert vs add — bez duplikatów</h2>
-        <p>
-            <code>game_assets.py</code> używa <code>upsert</code> (dodaj <em>lub</em> zaktualizuj), a nie <code>add</code>.
-            Dzięki deterministycznym ID możesz uruchomić ingest ponownie bez tworzenia duplikatów:
-        </p>
-        <pre><code>chunk_id = f<span class="string">"{asset_type}_{filename}_{idx}_c{c_idx}"</span>   <span class="comment"># zawsze takie samo dla tego samego wpisu</span>
+    <section id="wiki">
+        <h2><span class="num">6</span> Cleaning wiki pages</h2>
+        <p>Raw wikitext is mostly markup. <code>clean_mediawiki_text()</code> keeps the prose and the facts:</p>
+        <ul>
+            <li><strong>Infoboxes</strong> (<code>{{Item|durability=…}}</code>) become <code>key: value</code> lines, minus image/icon/link fields.</li>
+            <li>Link-style templates keep their display text (<code>{{ll|Casting|smelted}}</code> → <code>smelted</code>); templates without parameters (<code>{{PT}}</code>) are dropped; wiki links <code>[[Target|label]]</code> keep only the label; table cells keep their contents.</li>
+            <li>Comments, <code>&lt;translate&gt;</code>/<code>&lt;languages&gt;</code> tags, galleries, references, and File/Image/Category links are removed.</li>
+            <li>Redirect pages are skipped.</li>
+            <li>Each chunk starts with <code>Wiki page: &lt;title&gt;</code>, so even a chunk from the middle of a page says what it is about.</li>
+        </ul>
+    </section>
 
-collection.upsert(
-    documents=chunks,
-    ids=ids,           <span class="comment"># jeśli ID istnieje → nadpisz, jeśli nie → dodaj</span>
-    metadatas=metas    <span class="comment"># {"source":..., "file":..., "type":...}</span>
-)</code></pre>
+    <section id="reingest">
+        <h2><span class="num">7</span> Re-ingesting without duplicates</h2>
+        <p>
+            Both scripts can be run again safely. Chunk IDs are deterministic and include the file's path relative to the
+            asset folder — file names alone are not unique (several folders contain a <code>generic.json</code>):
+        </p>
+        <pre><code>chunk_id = f<span class="string">"{asset_type}:{rel_path}:{idx}:{c_idx}"</span>   <span class="comment"># game assets</span>
+chunk_id = f<span class="string">"wiki:{title}:{n}"</span>                       <span class="comment"># wiki pages</span></code></pre>
+        <p>And before writing, the old chunks of the same source are deleted, so a file that was removed or a page that got shorter
+        leaves nothing stale behind:</p>
+        <pre><code>collection.delete(where={<span class="string">"type"</span>: asset_type})                <span class="comment"># game assets: one asset type at a time</span>
+collection.delete(where={<span class="string">"source"</span>: {<span class="string">"$in"</span>: sources}})        <span class="comment"># wiki: the pages in this batch</span>
+kb.add_documents(collection, ids, texts, metadatas)          <span class="comment"># embed in batches + upsert</span></code></pre>
+        <div class="box info">
+            <strong>Embedding failures are not hidden.</strong> If Ollama fails on a batch, that batch is skipped and counted —
+            it is never stored with zero vectors, which would match random questions later.
+        </div>
+
+        <h4>Metadata</h4>
+        <p>
+            Each chunk carries <code>source</code> (e.g. <code>game_asset/recipe_alloy/tinbronze.json</code> or
+            <code>wiki/Bronze</code>) and <code>type</code>; wiki chunks also get a <code>url</code>. The bot logs sources next to
+            distances today, and they are what <a href="07-roadmap.html#citations">citing sources</a> will use.
+        </p>
+    </section>
+
+    <section id="run">
+        <h2><span class="num">8</span> Running it</h2>
+        <pre><code><span class="comment"># from the repo root, with the venv active</span>
+python -m ingest.game_assets --dry-run            <span class="comment"># parse only, print samples, write nothing</span>
+python -m ingest.game_assets --reset              <span class="comment"># fresh collection + all game assets (from the container)</span>
+python -m ingest.game_assets --assets-dir PATH    <span class="comment"># from a local assets folder instead</span>
+python -m ingest.wiki --all --en                  <span class="comment"># the whole English wiki</span>
+
+python -m tools.dbcheck <span class="string">"jak zrobić brąz"</span>          <span class="comment"># check what comes back, and at what distance</span></code></pre>
         <div class="box warn">
-            <strong>Uwaga na <code>wiki.py</code>:</strong> on używa <code>add</code> (nie upsert) — ponowne uruchomienie
-            na tych samych plikach <em>doda duplikaty</em>. Drobny kandydat na ujednolicenie (patrz <a href="07-ulepszenia.html">Ulepszenia</a>).
+            <code>--reset</code> drops the whole collection, wiki included. Run it with the game-assets script first, then the wiki.
+            Embedding needs <code>ollama pull bge-m3</code> on the machine in <code>OLLAMA_EMBED_HOST</code>.
         </div>
-
-        <h4>Metadane — po co</h4>
-        <p>
-            Każdy chunk dostaje metadane (<code>source</code>, <code>file</code>, <code>type</code>). Dziś nie są mocno używane,
-            ale pozwalają w przyszłości <strong>filtrować</strong> („szukaj tylko w recepturach") i <strong>cytować źródło</strong>
-            w odpowiedzi („wg wiki: Smithing").
-        </p>
     </section>
 
-    <section id="alternatywy">
-        <h2><span class="num">7</span> Alternatywy</h2>
+    <section id="alternatives">
+        <h2><span class="num">9</span> Alternatives</h2>
         <table>
-            <thead><tr><th>Element</th><th>Obecnie</th><th>Alternatywa</th></tr></thead>
+            <thead><tr><th>Element</th><th>Now</th><th>Alternative</th></tr></thead>
             <tbody>
-                <tr><td>Konwersja na tekst</td><td>Ręczne konwertery per typ</td><td>Szablon LLM-owy: model sam streszcza JSON na zdanie (wolniej, ale mniej kodu)</td></tr>
-                <tr><td>Chunking</td><td>Stała liczba słów + overlap</td><td>Semantyczny (po akapitach/nagłówkach) lub strukturalny (1 receptura = 1 chunk)</td></tr>
-                <tr><td>Źródło plików</td><td><code>docker exec</code> na żywym kontenerze</td><td>Kopia plików na dysku (szybsze, niezależne od działającego serwera)</td></tr>
-                <tr><td>Wiki</td><td>Lokalne pliki tekstowe</td><td>Pobieranie wprost z API wiki (jest w <code>archive/ingest_wiki.py</code>)</td></tr>
-                <tr><td>Odświeżanie</td><td>Ręczne uruchomienie</td><td>Zaplanowane (cron) po wykryciu aktualizacji gry/modów</td></tr>
+                <tr><td>Converting to text</td><td>Hand-written converters per type</td><td>An LLM summarises each JSON into sentences (slower, less code)</td></tr>
+                <tr><td>Chunking</td><td>Fixed word count + overlap</td><td>Semantic (by paragraph/heading) or structural (1 recipe = 1 chunk)</td></tr>
+                <tr><td>Mods</td><td>Vanilla <code>survival/</code> only</td><td>Extract mod archives and ingest their asset folders as their own source (see <a href="07-roadmap.html">Roadmap</a>)</td></tr>
+                <tr><td>Refreshing</td><td>Run by hand</td><td>Scheduled (cron) after a game or mod update</td></tr>
             </tbody>
         </table>
-        <div class="box info">
-            Pełny, szczegółowy poradnik o ingeście assetów gry (z liczbami plików i komendami) jest w
-            <a href="poradnik.html">oryginalnym poradniku</a>.
-        </div>
     </section>
 
     <div class="pager">
         <a class="prev" href="02-rag.html">
-            <div class="dir">← Wstecz</div>
+            <div class="dir">← Back</div>
             <div class="ttl">02 · RAG</div>
         </a>
         <a class="next" href="04-bot.html">
-            <div class="dir">Dalej →</div>
-            <div class="ttl">04 · Bot (watchdog)</div>
+            <div class="dir">Next →</div>
+            <div class="ttl">04 · The bot (watchdog)</div>
         </a>
     </div>
 
 </main>
 
 <footer class="page">
-    Dokumentacja projektu <strong>vs-story-ai</strong> · <a href="index.html">powrót do startu</a>
+    Documentation for <strong>vs-story-ai</strong> · <a href="index.html">back to home</a>
 </footer>
 
 </body>

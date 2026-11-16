@@ -1,34 +1,35 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dokumentacja · VS AI Asystent</title>
+<title>Docs · VS AI Assistant</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 
 <nav class="topnav">
-    <span class="brand">VS AI · Dokumentacja</span>
-    <a href="index.html" class="active">Start</a>
-    <a href="01-architektura.html">Architektura</a>
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html" class="active">Home</a>
+    <a href="01-architecture.html">Architecture</a>
     <a href="02-rag.html">RAG</a>
     <a href="03-ingest.html">Ingest</a>
     <a href="04-bot.html">Bot</a>
     <a href="05-llm.html">LLM</a>
-    <a href="06-asystent.html">Asystent</a>
-    <a href="07-ulepszenia.html">Ulepszenia</a>
+    <a href="06-persona.html">Persona</a>
+    <a href="07-roadmap.html">Roadmap</a>
 </nav>
 
 <header class="page">
-    <div class="eyebrow">Vintage Story · Lokalne AI · RAG</div>
-    <h1>Czym jest ten projekt i jak działa</h1>
-    <p class="sub">Kompletny przewodnik po bocie-asystencie AI dla serwera Vintage Story.
-    Od bazy wektorowej i odległości kosinusowej, przez działanie bota, po pomysły na ulepszenia.</p>
+    <div class="eyebrow">Vintage Story · AI assistant · RAG</div>
+    <h1>What this project is and how it works</h1>
+    <p class="sub">A guide to the in-game AI assistant for a Vintage Story server:
+    the vector database and cosine distance, how the bot runs, and what is still on the roadmap.</p>
     <div class="badges">
         <span class="badge">Python</span>
         <span class="badge">ChromaDB</span>
-        <span class="badge">Ollama (lokalny LLM)</span>
+        <span class="badge">Ollama (bge-m3)</span>
+        <span class="badge">Gemini</span>
         <span class="badge">RAG</span>
         <span class="badge">RCON</span>
         <span class="badge">Docker</span>
@@ -38,126 +39,122 @@
 <main>
 
     <section>
-        <h2><span class="num">?</span> W jednym akapicie</h2>
+        <h2><span class="num">?</span> In one paragraph</h2>
         <p class="lead">
-            To jest <strong>bot czatu AI dla serwera gry Vintage Story</strong>. Działa na Twoim komputerze (nie w chmurze).
-            Nasłuchuje czatu graczy w logach serwera (działającego w Dockerze), a gdy ktoś zada pytanie —
-            <strong>wyszukuje pasującą wiedzę o grze w bazie wektorowej</strong> (receptury, przedmioty, bloki, strony wiki)
-            i <strong>generuje odpowiedź lokalnym modelem językowym</strong> (Ollama). Odpowiedź trafia z powrotem na czat przez RCON.
-            Bot potrafi też wykonać kilka bezpiecznych komend (np. sprawdzić czas/pogodę) i reagować na zdarzenia w świecie.
+            This is an <strong>AI chat assistant for a Vintage Story game server</strong>.
+            It follows the players' chat in the logs of the game server (which runs in Docker). When someone writes
+            <code>AI &lt;question&gt;</code>, it <strong>looks up matching game knowledge in a vector database</strong>
+            (recipes, items, blocks, wiki pages) and <strong>generates an answer with a language model</strong>
+            (Gemini, or a local Ollama model). The answer goes back to the chat over RCON, in Polish.
+            The bot can also run a couple of harmless commands (time, weather) and reacts to world events.
         </p>
 
         <div class="box note">
-            <strong>Decyzja projektowa w tej dokumentacji:</strong> oryginalny bot udaje „mrocznego Boga”.
-            W tych materiałach traktujemy to jako <em>przestarzały pomysł</em> i wszędzie pokazujemy lepszą wersję:
-            zwykłego, pomocnego <strong>Asystenta</strong>. Szczegóły i gotowy kod w sekcji
-            <a href="06-asystent.html">Asystent zamiast Boga</a>.
+            <strong>Persona:</strong> the original bot played a “dark god”. It is now a plain, helpful
+            <strong>assistant</strong> whose answers are grounded in the knowledge base. Why, and what the prompts look like:
+            <a href="06-persona.html">Persona</a>.
         </div>
     </section>
 
     <section>
-        <h2><span class="num">▸</span> Przepływ w 6 krokach</h2>
+        <h2><span class="num">▸</span> The flow in five steps</h2>
         <div class="flow">
-            <div class="flow-step">Gracz pisze<br>na czacie</div>
+            <div class="flow-step">Player writes<br>in chat</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">Bot czyta<br>logi Dockera</div>
+            <div class="flow-step">Bot reads<br>Docker logs</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">Baza wektorowa<br>szuka wiedzy</div>
+            <div class="flow-step">Vector DB<br>finds knowledge</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">LLM (Ollama)<br>pisze odpowiedź</div>
+            <div class="flow-step">LLM writes<br>the answer</div>
             <div class="flow-arrow">→</div>
-            <div class="flow-step">RCON wysyła<br>na czat</div>
+            <div class="flow-step">RCON posts it<br>to chat</div>
         </div>
-        <p>Każdy z tych etapów ma osobną stronę z teorią, kodem i alternatywami — patrz mapa poniżej.</p>
+        <p>Each step has its own page with the theory, the code and the alternatives — see the map below.</p>
     </section>
 
     <section>
-        <h2><span class="num">▦</span> Mapa dokumentacji</h2>
+        <h2><span class="num">▦</span> Map of the docs</h2>
         <div class="grid cols-2">
-            <a class="card" href="01-architektura.html">
-                <span class="k">01 · Całość</span>
-                <h3>Architektura i uproszczenie</h3>
-                <p>Jak elementy łączą się w jeden system. Uproszczony, „zrozumiały" szkielet i mapa plików.</p>
+            <a class="card" href="01-architecture.html">
+                <span class="k">01 · The whole system</span>
+                <h3>Architecture</h3>
+                <p>How the parts fit together, a 12-line mental model of the bot, and the file map.</p>
             </a>
             <a class="card" href="02-rag.html">
-                <span class="k">02 · Serce projektu</span>
-                <h3>RAG, baza wektorowa, odległości</h3>
-                <p>Embeddingi, przestrzeń wektorowa, retrieval, <strong>odległość kosinusowa vs euklidesowa</strong> — z przykładami liczbowymi.</p>
+                <span class="k">02 · The core</span>
+                <h3>RAG, vectors, distances</h3>
+                <p>Embeddings, vector space, retrieval, <strong>cosine vs Euclidean distance</strong> — with worked numbers.</p>
             </a>
             <a class="card" href="03-ingest.html">
-                <span class="k">03 · Budowa wiedzy</span>
-                <h3>Ingest danych</h3>
-                <p>Jak pliki gry i wiki trafiają do bazy: parsowanie JSON5, chunking, czyszczenie, upsert.</p>
+                <span class="k">03 · Building the knowledge</span>
+                <h3>Data ingest</h3>
+                <p>How game files and wiki pages get into the database: JSON5 parsing, converters, chunking, upsert.</p>
             </a>
             <a class="card" href="04-bot.html">
                 <span class="k">04 · Runtime</span>
-                <h3>Bot (watchdog)</h3>
-                <p>Nasłuch logów, parsowanie czatu, kolejka RCON, komendy, reakcje na zdarzenia, wątki.</p>
+                <h3>The bot (watchdog)</h3>
+                <p>Following the logs, the trigger, RCON, the command whitelist, the thread pool, event reactions.</p>
             </a>
             <a class="card" href="05-llm.html">
-                <span class="k">05 · Model</span>
-                <h3>LLM, Ollama, fine-tuning</h3>
-                <p>Co robi model, jak budowany jest prompt, tłumaczenie PL→EN, oraz fine-tuning (LoRA/GGUF).</p>
+                <span class="k">05 · Models</span>
+                <h3>LLM and embeddings</h3>
+                <p>Gemini and Ollama, how the prompt is built, temperature, why there is no translation step any more.</p>
             </a>
-            <a class="card" href="06-asystent.html">
+            <a class="card" href="06-persona.html">
                 <span class="k">06 · Persona</span>
-                <h3>Asystent zamiast Boga</h3>
-                <p>Dlaczego „Bóg" przeszkadza graczom i gotowe prompty/kod zmieniające ton na pomocny.</p>
+                <h3>An assistant, not a god</h3>
+                <p>Why the “god” persona got in the players' way, and the assistant prompts that replaced it.</p>
             </a>
-            <a class="card" href="07-ulepszenia.html">
-                <span class="k">07 · Roadmapa</span>
-                <h3>Ulepszenia dla graczy</h3>
-                <p>Co poprawić, żeby gracze realnie korzystali: próg trafności, hybrid search, cytowania, bezpieczeństwo.</p>
-            </a>
-            <a class="card" href="poradnik.html">
-                <span class="k">+ Dodatek</span>
-                <h3>Oryginalny poradnik ingestu</h3>
-                <p>Pierwotny, szczegółowy poradnik o ładowaniu assetów gry do ChromaDB.</p>
+            <a class="card" href="07-roadmap.html">
+                <span class="k">07 · Roadmap</span>
+                <h3>Improvements</h3>
+                <p>What is done (threshold, multilingual embeddings, cosine, secrets) and what is still open.</p>
             </a>
         </div>
     </section>
 
     <section>
-        <h2><span class="num">⚙</span> Stos technologiczny w skrócie</h2>
+        <h2><span class="num">⚙</span> The stack at a glance</h2>
         <table>
-            <thead><tr><th>Warstwa</th><th>Technologia</th><th>Rola</th></tr></thead>
+            <thead><tr><th>Layer</th><th>Technology</th><th>Role</th></tr></thead>
             <tbody>
-                <tr><td>Gra / serwer</td><td>Vintage Story w Dockerze</td><td>Źródło czatu i zdarzeń (przez logi), wykonawca komend (przez RCON)</td></tr>
-                <tr><td>Most do gry</td><td>RCON (<code>mcrcon</code>) + <code>docker logs</code></td><td>Czytanie czatu i wysyłanie odpowiedzi/komend</td></tr>
-                <tr><td>Baza wiedzy</td><td>ChromaDB</td><td>Baza wektorowa — przechowuje wiedzę o grze jako embeddingi</td></tr>
-                <tr><td>Embeddingi</td><td><code>nomic-embed-text</code> (Ollama)</td><td>Zamienia tekst na wektory 768 liczb</td></tr>
-                <tr><td>Generowanie</td><td>Ollama (<code>gemma3</code> / własny model)</td><td>Pisze odpowiedź na podstawie pytania + znalezionej wiedzy</td></tr>
-                <tr><td>Mod serwera</td><td>EventLogger (C#)</td><td>Loguje śmierci graczy i zabójstwa, by bot mógł reagować</td></tr>
+                <tr><td>Game server</td><td>Vintage Story in Docker</td><td>Source of chat and events (via logs), runs commands (via RCON)</td></tr>
+                <tr><td>Bridge to the game</td><td><code>docker logs</code> + RCON (<code>vsai/rcon.py</code>)</td><td>Reading chat, sending answers and commands</td></tr>
+                <tr><td>Knowledge base</td><td>ChromaDB (cosine)</td><td>Vector database — stores game knowledge as embeddings</td></tr>
+                <tr><td>Embeddings</td><td><code>bge-m3</code> in Ollama on the server</td><td>Turns text into 1024-number vectors; multilingual, runs fine on CPU</td></tr>
+                <tr><td>Generation</td><td>Gemini 2.5 Flash, or Ollama <code>gemma3:12b</code></td><td>Writes the answer from the question plus the retrieved knowledge</td></tr>
+                <tr><td>Server mod</td><td>EventLogger (C#)</td><td>Logs player deaths and kills so the bot can react</td></tr>
             </tbody>
         </table>
         <div class="box tip">
-            <strong>Wszystko jest lokalne i darmowe.</strong> Nie ma żadnego API w chmurze ani opłat za tokeny —
-            model i baza działają na Twoim sprzęcie. To wielka zaleta prywatności i kosztów, ale wymaga GPU/CPU do sensownej szybkości.
+            <strong>Mostly local.</strong> The knowledge base and the embeddings run on the game server, so retrieval keeps working
+            even when the gaming PC is off. Generation goes to Gemini when <code>GEMINI_API_KEY</code> is set, or to a local
+            Ollama model otherwise (<code>OLLAMA_FALLBACK=1</code> uses Ollama as a backup when Gemini fails).
         </div>
     </section>
 
     <section>
-        <h2><span class="num">★</span> Od czego zacząć czytanie</h2>
+        <h2><span class="num">★</span> Where to start reading</h2>
         <ol>
-            <li>Jeśli chcesz <strong>zrozumieć RAG i „odległości cos"</strong> → wejdź od razu w <a href="02-rag.html">RAG i bazę wektorową</a>.</li>
-            <li>Jeśli chcesz <strong>ogarnąć całość</strong> → zacznij od <a href="01-architektura.html">Architektury</a>.</li>
-            <li>Jeśli chcesz <strong>zmienić „Boga" na asystenta</strong> → <a href="06-asystent.html">Asystent zamiast Boga</a>.</li>
-            <li>Jeśli chcesz <strong>liste konkretnych poprawek</strong> → <a href="07-ulepszenia.html">Ulepszenia</a>.</li>
+            <li>To <strong>understand RAG and cosine distance</strong> → go straight to <a href="02-rag.html">RAG and the vector database</a>.</li>
+            <li>To <strong>get the big picture</strong> → start with <a href="01-architecture.html">Architecture</a>.</li>
+            <li>To <strong>run or deploy it</strong> → the <code>README.md</code> in the repo root has the commands.</li>
+            <li>To see <strong>what is left to do</strong> → <a href="07-roadmap.html">Roadmap</a>.</li>
         </ol>
     </section>
 
     <div class="pager">
         <span></span>
-        <a class="next" href="01-architektura.html">
-            <div class="dir">Dalej →</div>
-            <div class="ttl">01 · Architektura i uproszczenie</div>
+        <a class="next" href="01-architecture.html">
+            <div class="dir">Next →</div>
+            <div class="ttl">01 · Architecture</div>
         </a>
     </div>
 
 </main>
 
 <footer class="page">
-    Dokumentacja projektu <strong>vs-story-ai</strong> · Vintage Story AI Asystent · wygenerowano lokalnie
+    Documentation for <strong>vs-story-ai</strong> · Vintage Story AI assistant
 </footer>
 
 </body>

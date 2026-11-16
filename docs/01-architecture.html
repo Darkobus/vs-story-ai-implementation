@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Architecture · VS AI Assistant</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="topnav">
+    <span class="brand">VS AI · Docs</span>
+    <a href="index.html">Home</a>
+    <a href="01-architecture.html" class="active">Architecture</a>
+    <a href="02-rag.html">RAG</a>
+    <a href="03-ingest.html">Ingest</a>
+    <a href="04-bot.html">Bot</a>
+    <a href="05-llm.html">LLM</a>
+    <a href="06-persona.html">Persona</a>
+    <a href="07-roadmap.html">Roadmap</a>
+</nav>
+
+<header class="page">
+    <div class="eyebrow">Part 01 · The whole system</div>
+    <h1>Architecture</h1>
+    <p class="sub">How the game, the bot, the knowledge base and the language model talk to each other —
+    and the short loop the whole bot boils down to.</p>
+</header>
+
+<main>
+
+    <div class="toc">
+        <strong>On this page</strong>
+        <ol>
+            <li><a href="#overview">The whole system</a></li>
+            <li><a href="#phases">Two phases: ingest and runtime</a></li>
+            <li><a href="#files">File map — what does what</a></li>
+            <li><a href="#skeleton">The simplified skeleton (mental model)</a></li>
+            <li><a href="#alternatives">Alternative architectures</a></li>
+        </ol>
+    </div>
+
+    <section id="overview">
+        <h2><span class="num">1</span> The whole system</h2>
+        <p>
+            The system is made of <strong>four parts</strong> that talk to each other: the game (Vintage Story in Docker),
+            the bridge to the game (logs + RCON), the brain (a language model) and the memory (the ChromaDB vector database).
+            The diagram shows how information flows when a player asks a question.
+        </p>
+
+        <div class="svg-wrap">
+        <svg viewBox="0 0 760 420" xmlns="http://www.w3.org/2000/svg" width="100%" font-family="Segoe UI, sans-serif">
+            <defs>
+                <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                    <path d="M0,0 L7,3 L0,6 Z" fill="#2dd4bf"/>
+                </marker>
+            </defs>
+            <!-- Game -->
+            <rect x="20" y="160" width="170" height="100" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="105" y="190" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">Game server</text>
+            <text x="105" y="210" fill="#8b95a3" font-size="11" text-anchor="middle">Vintage Story</text>
+            <text x="105" y="226" fill="#8b95a3" font-size="11" text-anchor="middle">(Docker)</text>
+            <text x="105" y="246" fill="#38bdf8" font-size="10" text-anchor="middle">chat · events · RCON</text>
+
+            <!-- Bot -->
+            <rect x="295" y="150" width="180" height="120" rx="10" fill="#15201d" stroke="#1c5247"/>
+            <text x="385" y="180" fill="#2dd4bf" font-size="15" font-weight="700" text-anchor="middle">BOT (watchdog.py)</text>
+            <text x="385" y="202" fill="#aab4c0" font-size="11" text-anchor="middle">1. reads the logs</text>
+            <text x="385" y="219" fill="#aab4c0" font-size="11" text-anchor="middle">2. asks the DB for knowledge</text>
+            <text x="385" y="236" fill="#aab4c0" font-size="11" text-anchor="middle">3. asks the LLM for an answer</text>
+            <text x="385" y="253" fill="#aab4c0" font-size="11" text-anchor="middle">4. sends it back over RCON</text>
+
+            <!-- LLM -->
+            <rect x="570" y="60" width="170" height="90" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="655" y="90" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">LLM</text>
+            <text x="655" y="110" fill="#8b95a3" font-size="11" text-anchor="middle">Gemini 2.5 Flash</text>
+            <text x="655" y="128" fill="#8b95a3" font-size="11" text-anchor="middle">or Ollama gemma3:12b</text>
+
+            <!-- Chroma -->
+            <rect x="570" y="270" width="170" height="90" rx="10" fill="#1a212c" stroke="#2d3543"/>
+            <text x="655" y="300" fill="#e6edf3" font-size="14" font-weight="700" text-anchor="middle">ChromaDB</text>
+            <text x="655" y="320" fill="#8b95a3" font-size="11" text-anchor="middle">vector database</text>
+            <text x="655" y="338" fill="#8b95a3" font-size="11" text-anchor="middle">bge-m3 embeddings</text>
+
+            <!-- arrows -->
+            <line x1="190" y1="200" x2="293" y2="200" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="240" y="192" fill="#5d6b7a" font-size="9" text-anchor="middle">chat logs</text>
+            <line x1="293" y1="225" x2="192" y2="225" stroke="#38bdf8" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="240" y="244" fill="#5d6b7a" font-size="9" text-anchor="middle">answer (RCON)</text>
+
+            <line x1="477" y1="180" x2="568" y2="120" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="540" y="142" fill="#5d6b7a" font-size="9" text-anchor="middle">prompt</text>
+            <line x1="477" y1="225" x2="568" y2="310" stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)"/>
+            <text x="535" y="285" fill="#5d6b7a" font-size="9" text-anchor="middle">query</text>
+
+            <text x="380" y="40" fill="#e6edf3" font-size="13" font-weight="700" text-anchor="middle">The path of one player question</text>
+        </svg>
+        <div class="cap">The bot is the conductor: it knows nothing and generates nothing itself — it connects the knowledge base to the language model.</div>
+        </div>
+    </section>
+
+    <section id="phases">
+        <h2><span class="num">2</span> Two phases: ingest and runtime</h2>
+        <p>This is the key distinction. The project does two quite different things at two different times:</p>
+
+        <div class="grid cols-2">
+            <div class="card">
+                <span class="k">Phase A · once in a while</span>
+                <h3>Ingest (building the knowledge)</h3>
+                <p>You run it by hand when you want to feed the bot. It reads the game files and the wiki, turns them into
+                vectors and stores them in ChromaDB. After that the database is ready until you want to add or refresh knowledge
+                (a game update, a new mod).</p>
+            </div>
+            <div class="card">
+                <span class="k">Phase B · always running</span>
+                <h3>Runtime (serving players)</h3>
+                <p>The bot runs non-stop as a systemd service, follows the chat and answers as it goes. It uses the database
+                built in phase A. That is <code>bot/watchdog.py</code>.</p>
+            </div>
+        </div>
+
+        <div class="box info">
+            <strong>An analogy:</strong> phase A is <em>studying for an exam</em> (writing up notes). Phase B is <em>the exam itself</em>
+            (answering questions with the notes at hand). RAG is an “open-book exam” — the model does not have to remember everything,
+            it looks things up when it needs to.
+        </div>
+    </section>
+
+    <section id="files">
+        <h2><span class="num">3</span> File map — what does what</h2>
+        <table>
+            <thead><tr><th>File / folder</th><th>Phase</th><th>Role</th></tr></thead>
+            <tbody>
+                <tr><td><code>bot/watchdog.py</code></td><td><span class="pill green">runtime</span></td><td>The bot: log loop, trigger and cooldowns, RAG, LLM calls, event reactions</td></tr>
+                <tr><td><code>vsai/config.py</code></td><td>shared</td><td>Settings from <code>.env</code> (paths, models, RCON)</td></tr>
+                <tr><td><code>vsai/embeddings.py</code></td><td>shared</td><td>Batch embeddings from Ollama's <code>/api/embed</code>; raises on failure, never returns zero vectors</td></tr>
+                <tr><td><code>vsai/kb.py</code></td><td>shared</td><td>Opening the collection, model/metric check, adding documents, search</td></tr>
+                <tr><td><code>vsai/rcon.py</code></td><td>shared</td><td>A small RCON client that is safe to call from any thread</td></tr>
+                <tr><td><code>ingest/game_assets.py</code></td><td><span class="pill amber">ingest</span></td><td>Loads recipes, items and blocks from the game files (from the container or a local folder)</td></tr>
+                <tr><td><code>ingest/wiki.py</code></td><td><span class="pill amber">ingest</span></td><td>Downloads wiki pages through the MediaWiki API, cleans the markup and loads them</td></tr>
+                <tr><td><code>tools/healthcheck.py</code></td><td>tool</td><td>Checks embeddings, the knowledge base and RCON</td></tr>
+                <tr><td><code>tools/dbcheck.py</code></td><td>tool</td><td>Runs test questions and prints distances — used to calibrate the threshold</td></tr>
+                <tr><td><code>tools/console.py</code></td><td>tool</td><td>Interactive RCON console</td></tr>
+                <tr><td><code>mods/</code></td><td>game mod (C#)</td><td>EventLogger: logs player deaths and kills so the bot can react</td></tr>
+                <tr><td><code>tests/unit/</code></td><td>tests</td><td>pytest; CI also runs ruff and mypy</td></tr>
+                <tr><td><code>deploy/vsbot.service</code></td><td>deploy</td><td>The systemd unit that keeps the bot running</td></tr>
+                <tr><td><code>chroma_db/</code></td><td>data</td><td>The vector database itself (files on disk, not in git)</td></tr>
+                <tr><td><code>archive/</code></td><td>—</td><td>Retired code (the fine-tuning experiment) — not maintained</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section id="skeleton">
+        <h2><span class="num">4</span> The simplified skeleton (mental model)</h2>
+        <p>
+            <code>watchdog.py</code> can look intimidating (threads, regexes, cooldowns). Strip away everything around the core
+            and a very simple loop remains. <strong>This is the whole framework in 12 lines of pseudocode:</strong>
+        </p>
+
+        <pre><code><span class="keyword">for</span> line <span class="keyword">in</span> server_logs():               <span class="comment"># 1. follow the chat live</span>
+    player, question = parse_chat(line)
+    <span class="keyword">if</span> <span class="keyword">not</span> question: <span class="keyword">continue</span>
+
+    knowledge = kb.search(question, n=<span class="number">5</span>)   <span class="comment"># 2. RAG: find matching chunks</span>
+
+    prompt = f<span class="string">"""You are a Vintage Story assistant.
+    Knowledge: {knowledge}
+    The player asks: {question}"""</span>       <span class="comment"># 3. build the prompt</span>
+
+    answer = llm.generate(prompt)          <span class="comment"># 4. ask the model</span>
+    rcon.send(answer)                      <span class="comment"># 5. post it to chat</span></code></pre>
+
+        <p>Everything else in the real file is <strong>support around these 5 steps</strong>:</p>
+        <ul>
+            <li><strong>A thread pool</strong> — questions and event reactions run in worker threads, so the log loop never waits for the LLM.</li>
+            <li><strong>A relevance threshold</strong> — chunks that are too far from the question are dropped, and the model is told to say it does not know.</li>
+            <li><strong>Conversation memory</strong> — the player's last 3 question/answer pairs, for context.</li>
+            <li><strong>A toxicity filter and cooldowns</strong> — no spam, no reacting to abuse.</li>
+            <li><strong>Parsing <code>[CMD: ...]</code></strong> — the model may ask to run <code>time</code> or <code>weather</code>.</li>
+            <li><strong>Reconnecting</strong> — if the container restarts, the log stream ends; the bot reconnects after 5 seconds.</li>
+        </ul>
+
+        <div class="box tip">
+            <strong>Takeaway:</strong> if you ever get lost in the code, come back to these 5 steps.
+            Every function in <code>watchdog.py</code> handles exactly one of them, or one of the support pieces above.
+            The reusable parts (config, embeddings, knowledge base, RCON) already live in the shared <code>vsai/</code> package.
+        </div>
+    </section>
+
+    <section id="alternatives">
+        <h2><span class="num">5</span> Alternative architectures</h2>
+        <p>The project is “RAG glued together by hand”. That is great for learning, but there are other routes:</p>
+
+        <table>
+            <thead><tr><th>Approach</th><th>What it means</th><th>When it is worth it</th></tr></thead>
+            <tbody>
+                <tr>
+                    <td><strong>Current: a hand-written script</strong></td>
+                    <td>You write the loop and call Chroma, Ollama and Gemini over HTTP yourself</td>
+                    <td>Learning, full control, few dependencies <span class="pill green">you are here</span></td>
+                </tr>
+                <tr>
+                    <td><strong>A RAG framework</strong><br>(LangChain / LlamaIndex)</td>
+                    <td>Ready-made building blocks: loaders, splitters, retrievers, chains</td>
+                    <td>When you want to add features quickly (reranking, citations) without writing them from scratch</td>
+                </tr>
+                <tr>
+                    <td><strong>An agent with tools</strong></td>
+                    <td>The model decides when to search the knowledge base and when to run a command (function calling)</td>
+                    <td>When you want more autonomous behaviour and more commands</td>
+                </tr>
+                <tr>
+                    <td><strong>Fine-tuning instead of RAG</strong></td>
+                    <td>Bake the knowledge into the model's weights by training (tried here, now in <code>archive/train/</code>)</td>
+                    <td>Fine for <em>style and tone</em>. Poor for <em>facts</em> — knowledge goes stale and the model makes things up. <span class="pill amber">combine with RAG</span></td>
+                </tr>
+                <tr>
+                    <td><strong>A server mod instead of a bot</strong></td>
+                    <td>All logic in C# inside the game, no external process</td>
+                    <td>When you want integration from the inside (e.g. an <code>/ai</code> command instead of a chat prefix)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="box note">
+            <strong>Recommendation:</strong> keep the hand-written script (you understand every line), but
+            <strong>borrow ideas</strong> from the frameworks where they pay off. The <em>relevance threshold</em> is already in;
+            <em>hybrid search and reranking</em> are the next biggest gains — see <a href="02-rag.html">RAG</a> and the
+            <a href="07-roadmap.html">Roadmap</a>.
+        </div>
+    </section>
+
+    <div class="pager">
+        <a class="prev" href="index.html">
+            <div class="dir">← Back</div>
+            <div class="ttl">Home</div>
+        </a>
+        <a class="next" href="02-rag.html">
+            <div class="dir">Next →</div>
+            <div class="ttl">02 · RAG and the vector database</div>
+        </a>
+    </div>
+
+</main>
+
+<footer class="page">
+    Documentation for <strong>vs-story-ai</strong> · <a href="index.html">back to home</a>
+</footer>
+
+</body>
+</html>
