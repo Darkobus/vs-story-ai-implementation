@@ -6,6 +6,8 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![RAG](https://img.shields.io/badge/RAG-ChromaDB%20%2B%20bge--m3-teal)
 ![LLM](https://img.shields.io/badge/LLM-Gemini%20%7C%20Ollama-purple)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://darkobus.github.io/vs-story-ai-implementation/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Players on a multiplayer [Vintage Story](https://www.vintagestory.at/) server ask a question in chat,
 and the bot answers a few seconds later — with exact recipes and ratios taken from the game files and
@@ -81,7 +83,7 @@ flowchart LR
 
 ## Design notes
 
-A few decisions that shaped the project — the [docs](docs/index.html) go deeper.
+A few decisions that shaped the project — the [docs](https://darkobus.github.io/vs-story-ai-implementation/) go deeper.
 
 | Problem | Decision |
 |---|---|
@@ -221,7 +223,7 @@ Polish: the prompts are English and tell the model to reply in Polish.
 
 ## Documentation
 
-[`docs/`](docs/index.html) is a seven-part illustrated write-up — open `docs/index.html` in a browser:
+A seven-part illustrated write-up, **[read it online](https://darkobus.github.io/vs-story-ai-implementation/)** (source in [`docs/`](docs/)):
 
 1. **Architecture** — the parts, and the 12-line loop the bot boils down to
 2. **RAG** — embeddings, vector space, and cosine distance worked out by hand
@@ -235,7 +237,7 @@ Polish: the prompts are English and tell the model to reply in Polish.
 
 Next up: hybrid search (vectors + keywords) with reranking for exact item names, splitting
 `watchdog.py` into modules, and mod assets in the knowledge base. Details in
-[the roadmap](docs/07-roadmap.html).
+[the roadmap](https://darkobus.github.io/vs-story-ai-implementation/07-roadmap.html).
 
 ## Acknowledgements
 
@@ -244,3 +246,7 @@ Next up: hybrid search (vectors + keywords) with reranking for exact item names,
 - The [Vintage RCON](https://mods.vintagestory.at/vintagercon) mod by Shijikori.
 - The knowledge base is built locally from your own game installation and the public wiki;
   no game data is stored in this repository.
+
+## License
+
+[MIT](LICENSE). Vintage Story and its assets belong to Anego Studios and are not covered by this license.
